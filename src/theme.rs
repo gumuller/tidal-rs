@@ -2,7 +2,6 @@ use std::{collections::BTreeMap, env, fs, path::PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct Theme {
-    pub name: String,
     pub background: String,
     pub surface: String,
     pub raised: String,
@@ -17,7 +16,7 @@ fn hex(value: &str) -> bool {
 }
 
 impl Theme {
-    pub fn from_palette(name: &str, text: &str) -> Self {
+    pub fn from_palette(text: &str) -> Self {
         let values: BTreeMap<String, toml::Value> = toml::from_str(text).unwrap_or_default();
         let color = |key: &str, fallback: &str| {
             values
@@ -28,17 +27,6 @@ impl Theme {
                 .to_owned()
         };
         Self {
-            name: name
-                .trim()
-                .split('-')
-                .map(|s| {
-                    let mut c = s.chars();
-                    c.next()
-                        .map(|x| x.to_uppercase().collect::<String>() + c.as_str())
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
             background: color("background", "#101218"),
             surface: color("dark_background", "#0c0e13"),
             raised: color("lighter_background", "#1b1e28"),
@@ -52,7 +40,7 @@ impl Theme {
     pub fn load() -> Self {
         if let Some(path) = env::var_os("TIDAL_THEME_FILE") {
             if let Ok(text) = fs::read_to_string(path) {
-                return Self::from_palette("Custom", &text);
+                return Self::from_palette(&text);
             }
         }
         let home = PathBuf::from(env::var_os("HOME").unwrap_or_default());
@@ -69,12 +57,10 @@ impl Theme {
             config.join("omarchy/current"),
         ] {
             if let Ok(palette) = fs::read_to_string(current.join("theme/colors.toml")) {
-                let name = fs::read_to_string(current.join("theme.name"))
-                    .unwrap_or_else(|_| "Omarchy".into());
-                return Self::from_palette(&name, &palette);
+                return Self::from_palette(&palette);
             }
         }
-        Self::from_palette("System", "")
+        Self::from_palette("")
     }
 
     pub fn css(&self) -> String {
@@ -99,17 +85,15 @@ mod tests {
     #[test]
     fn theme_uses_palette_and_rejects_css_injection() {
         let t = Theme::from_palette(
-            "tokyo-night",
             "background = '#123456'\naccent = 'red; }'\nforeground = '#abcdef'",
         );
-        assert_eq!(t.name, "Tokyo Night");
         assert_eq!(t.background, "#123456");
         assert_eq!(t.foreground, "#abcdef");
         assert_eq!(t.accent, "#a1a7f4");
     }
     #[test]
     fn malformed_palette_has_readable_defaults() {
-        let t = Theme::from_palette("System", "not = [toml");
+        let t = Theme::from_palette("not = [toml");
         assert_eq!(t.background, "#101218");
         assert!(t.css().contains("@define-color tidal_fg"));
     }

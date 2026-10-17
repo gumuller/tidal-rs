@@ -62,7 +62,6 @@ struct Ui {
     visualizer: gtk::DrawingArea,
     visual_select: gtk::DropDown,
     subtitle: gtk::Label,
-    theme: gtk::Label,
     stack: gtk::Stack,
     content: gtk::Stack,
     grid: gtk::FlowBox,
@@ -955,15 +954,6 @@ fn build(app: &gtk::Application) {
     let footer = vbox(8);
     footer.add_css_class("sidebar-footer");
     sidebar.append(&footer);
-    let theme_row = hbox(12);
-    theme_row.add_css_class("sidebar-theme");
-    theme_row.append(&label("Theme", "small"));
-    let theme_label = label(&theme.name, "small");
-    theme_label.set_hexpand(true);
-    theme_label.set_ellipsize(pango::EllipsizeMode::End);
-    theme_label.set_tooltip_text(Some("Follows your Omarchy theme automatically"));
-    theme_row.append(&theme_label);
-    footer.append(&theme_row);
     let account_actions = hbox(8);
     account_actions.add_css_class("sidebar-account");
     let account = label("Connecting…", "muted");
@@ -992,6 +982,7 @@ fn build(app: &gtk::Application) {
     let heading = vbox(0);
     heading.set_hexpand(true);
     let title = label("Home", "page-title");
+    title.update_state(&[gtk::accessible::State::Busy(true)]);
     title.set_accessible_role(gtk::AccessibleRole::Heading);
     title.update_property(&[gtk::accessible::Property::Level(1)]);
     title.set_ellipsize(pango::EllipsizeMode::End);
@@ -1265,7 +1256,6 @@ fn build(app: &gtk::Application) {
         visualizer,
         visual_select: viz_mode.clone(),
         subtitle,
-        theme: theme_label,
         stack,
         content,
         grid,
@@ -1752,7 +1742,7 @@ fn build(app: &gtk::Application) {
                             navigate(&ui, &state, &tx, View::Albums, 1, false);
                         }
                     }
-                    Event::Ready => {
+                    Event::Ready(name) => {
                         ui.toolbar.set_visible(true);
                         ui.search.set_sensitive(true);
                         for button in &ui.nav {
@@ -1760,7 +1750,8 @@ fn build(app: &gtk::Application) {
                         }
                         ui.sign_in.set_visible(false);
                         ui.sign_out.set_sensitive(true);
-                        ui.account.set_text("Account connected");
+                        ui.account.set_text(&name);
+                        ui.account.set_tooltip_text(Some(&name));
                         ui.login_button.set_sensitive(true);
                         navigate(&ui, &state, &tx, View::Home, 1, false);
                     }
@@ -1820,6 +1811,7 @@ fn build(app: &gtk::Application) {
                         ui.elapsed.set_text("0:00");
                         ui.duration.set_text("0:00");
                         ui.account.set_text("Not connected");
+                        ui.account.set_tooltip_text(None);
                         ui.login_button.set_sensitive(true);
                         ui.login_detail
                             .set_text("Connect your TIDAL account to explore your library.");
@@ -1901,7 +1893,6 @@ fn build(app: &gtk::Application) {
             let css = theme.css();
             if css != state.borrow().theme_css {
                 provider.load_from_string(&css);
-                ui.theme.set_text(&theme.name);
                 state.borrow_mut().theme_css = css;
             }
             glib::ControlFlow::Continue

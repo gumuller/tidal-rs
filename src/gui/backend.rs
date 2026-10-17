@@ -151,7 +151,7 @@ pub enum Event {
     Queue(Vec<Item>),
     SavedAlbums(Vec<u64>),
     AlbumSaved(u64, bool),
-    Ready,
+    Ready(String),
     NeedsLogin,
     LoginCode(String, String),
     Page(Page),
@@ -400,6 +400,56 @@ fn modules(value: &serde_json::Value) -> impl Iterator<Item = &serde_json::Value
         .into_iter()
         .flatten()
         .flat_map(|row| row["modules"].as_array().into_iter().flatten())
+}
+
+async fn account_name(client: &TidalClient) -> Option<String> {
+    // Refresh an expired session through the SDK before requesting the profile.
+    client
+        .favorite_tracks(Some(0), Some(1), None, None)
+        .await
+        .ok()?;
+    let auth = client.get_authz()?;
+    let user_id = client.get_user_id()?;
+    let profile: serde_json::Value = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .ok()?
+        .get(format!("https://api.tidal.com/v1/users/{user_id}"))
+        .bearer_auth(&auth.access_token)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    for field in ["profileName", "fullName"] {
+        if let Some(name) = profile[field]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(name.into());
+        }
+    }
+    let name = ["firstName", "lastName"]
+        .iter()
+        .filter_map(|field| profile[*field].as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !name.is_empty() {
+        return Some(name);
+    }
+    ["nickname", "username"].iter().find_map(|field| {
+        profile[*field]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    })
 }
 async fn discovery_page(
     client: &TidalClient,
@@ -701,7 +751,7 @@ pub fn spawn() -> (
             let mut client=online::client(&token_path).ok().and_then(|c|{
                 fs::read(&token_path).ok().and_then(|data|serde_json::from_slice::<Authz>(&data).ok()).map(|auth|c.with_authz(auth))
             });
-            let _=tx.send(if client.is_some(){Event::Ready}else{Event::NeedsLogin});
+            let _=tx.send(if let Some(c)=client.as_ref(){Event::Ready(account_name(c).await.unwrap_or_else(||"TIDAL account".into()))}else{Event::NeedsLogin});
             let mut player:Option<Player>=None;
             let preferences=Preferences::load();let mut choice=preferences.quality;
             let mut library=Library::new();library.quality=choice.audio();
@@ -723,7 +773,8 @@ pub fn spawn() -> (
                                 Action::Login=> {
                                     let send=tx.clone();
                                     let c=online::login_with(&token_path,move |url,code|{let _=send.send(Event::LoginCode(url.into(),code.into()));}).await?;
-                                    client=Some(c);saved_ids=None;history=History::load(client.as_ref().and_then(|c|c.get_user_id()));let _=tx.send(Event::Ready);
+                                    let name=account_name(&c).await.unwrap_or_else(||"TIDAL account".into());
+                                    client=Some(c);saved_ids=None;history=History::load(client.as_ref().and_then(|c|c.get_user_id()));let _=tx.send(Event::Ready(name));
                                 },
                                 Action::Logout=>{spectrum=None;player=None;library=Library::new();library.quality=choice.audio();saved_ids=None;client=None;if token_path.exists(){fs::remove_file(&token_path)?;}let _=tx.send(Event::NeedsLogin);},
                                 Action::Browse{view,page,epoch}=>{
