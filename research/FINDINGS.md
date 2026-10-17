@@ -161,3 +161,30 @@ album playback, audio meter output, the circular button's geometry and narrow
 album layout. Full Windows feature parity is still incomplete: artist pages,
 editorial videos, offline downloads and other Windows-specific features remain
 outside this increment.
+
+
+## v0.3.0 genre discovery and visualization modes
+
+Explore `PAGE_LINKS_CLOUD` entries have slug `imageId` values (for example
+`hiphop`) and sometimes null images; treating those as UUID artwork left every
+category blank. Category thumbnails now resolve the first current album or
+playlist image from their actual linked page in the background, using bounded
+concurrency and the existing artwork cache. This uses current section artwork,
+not the Windows client's static category illustration assets.
+
+Genre pages expose their own supported `ALBUM_LIST`, `TRACK_LIST` and
+`PLAYLIST_LIST` module names as filters, including New Albums and New Tracks
+where available. Full lists come from the module's `pagedList.dataApiPath` with
+locale, offset and limit. Live checks confirmed the single-module page ignores
+offset, while `pages/data/...` returns distinct later albums. Track filters
+produce playable queues; album filters retain the normal open/save workflow.
+Unsupported video and artist modules remain omitted.
+
+Six native Cairo modes (Vines, Neon Tunnel, Warp Drive, Plasma, Orbital and
+Laser Bloom) use real RMS audio levels and a shared rendering module. The
+expanded view has a mode-cycle button and closes with Escape. These are
+procedural audio-level visualizations; none claims to display FFT bins or raw
+waveform samples. Offline render checks assert that each mode paints a
+nonblank, distinct frame and responds to changed audio energy. Native E2E
+checks cover mode switching/fullscreen, loaded category images, new-release
+pagination and playback from a genre's New Tracks list.

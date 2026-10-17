@@ -5,7 +5,8 @@ artwork, saved albums, favorite tracks, playlists, catalog search, and online
 playback through mpv. It also retains a terminal client and the original player
 protocol workbench.
 
-Local Git history starts at `v0.1.0`; discovery and album listening are `v0.2.0`.
+Local Git history starts at `v0.1.0`; discovery and album listening are `v0.2.0`. Genre releases, section artwork
+and six visualization modes are `v0.3.0`.
 This covers the requested discovery and album workflows; full Windows feature
 parity remains ongoing.
 
@@ -23,11 +24,17 @@ for pause/resume, previous/next, seeking and volume. `Ctrl+K` focuses catalog
 search; Enter submits it. Toggle **Search albums** to find albums by title or
 artist; turn it off to find tracks.
 Open **Explore** for TIDAL genres, moods, decades, new releases and editorial
-playlists. Open an album and choose **Save album** to add it to your online library.
+playlists. Select a genre, then **New Albums** or **New Tracks** (where TIDAL
+provides them) to browse current releases. These lists paginate beyond the
+initial editorial previews. Section tiles use current artwork from that
+section, cached locally. Open an album and choose **Save album** to add it to your online library.
 **Play this album** queues the complete album, including albums longer than a
 single library page. The listening view places the artwork beside the tracks
-and includes a theme-colored **Vines** visualizer driven by real mpv RMS audio
-levels (not a frequency spectrum).
+and includes six visualizers driven by real mpv RMS audio levels: **Vines**,
+**Neon Tunnel**, **Warp Drive**, **Plasma**, **Orbital** and **Laser Bloom**.
+Use the arrow below the visualization to cycle modes, or the expand button for
+a fullscreen view. Escape closes the expanded view. These are level-reactive
+generative effects, rather than frequency spectra.
 
 Space toggles playback outside the search field, and
 `Ctrl+Q` closes the window.
@@ -57,7 +64,10 @@ session, and palette tests leave the desktop theme unchanged.
 Results and screenshots are written to `test-results/gui-e2e-*` (gitignored).
 The suite also verifies real Explore navigation, album search, idempotent saving
 of an already-saved album, full album playback, a circular play button and audio
-meter metadata. No albums are removed or newly added by the test.
+meter metadata. It also checks loaded genre tile images, new-release album
+pagination, playable new genre tracks, switching through all six visualizer
+modes and opening/closing the expanded visualizer. An offline render test checks
+that each mode produces a distinct frame and responds to audio levels. No albums are removed or newly added by the test.
 The suite checks narrow/wide layouts, artwork and label bounds, account and idle
 control states, album pagination, album/playlist navigation, real streaming,
 pause, seek, volume, next-track, keyboard search, empty results, live palette
@@ -99,7 +109,7 @@ quality is HIGH; `quality lossless` requests lossless for later tracks, subject
 to account/client availability. This backend supports unencrypted BTS and DASH
 streams returned for the signed-in user. It does not implement DRM decoding.
 
-Build, seven offline tests and the local mpv check pass. Browser authorization,
+Build, eight offline tests and the local mpv check pass. Browser authorization,
 favorite tracks, playlists and saved albums were verified live with the user's
 session. An authenticated HIGH-quality track loaded, decoded and advanced in a
 silent mpv check. Use `target/debug/tidal-rs online-check` to repeat that check;

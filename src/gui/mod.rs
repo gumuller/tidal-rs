@@ -1,5 +1,6 @@
 mod artwork;
 mod backend;
+mod visualizer;
 use crate::theme::Theme;
 use backend::{Action, Event, Item, Key, PAGE_SIZE, Page, View};
 use gtk::{gdk, gio, glib, pango, prelude::*};
@@ -34,6 +35,7 @@ struct Ui {
     window: gtk::ApplicationWindow,
     title: gtk::Label,
     toolbar: gtk::Box,
+    discovery_filters: gtk::Box,
     hero: gtk::Box,
     hero_art: gtk::Box,
     hero_title: gtk::Label,
@@ -182,6 +184,7 @@ fn activate(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, i
             tx,
             View::Discovery {
                 path,
+                section: None,
                 title: item.title,
             },
             1,
@@ -230,6 +233,38 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
         ui.tracks.remove(&child);
     }
     state.borrow_mut().covers.clear();
+    while let Some(child) = ui.discovery_filters.first_child() {
+        ui.discovery_filters.remove(&child);
+    }
+    ui.discovery_filters.set_visible(!page.sections.is_empty());
+    if let View::Discovery {
+        path,
+        title,
+        section: selected,
+    } = &page.view
+    {
+        for section in std::iter::once("All".to_owned()).chain(page.sections.iter().cloned()) {
+            let button = gtk::Button::with_label(&section);
+            let section = if section == "All" {
+                None
+            } else {
+                Some(section)
+            };
+            if &section == selected {
+                button.add_css_class("active");
+            }
+            let view = View::Discovery {
+                path: path.clone(),
+                title: title.clone(),
+                section,
+            };
+            let ui = ui.clone();
+            let state = state.clone();
+            let tx = tx.clone();
+            ui.discovery_filters.append(&button);
+            button.connect_clicked(move |_| navigate(&ui, &state, &tx, view.clone(), 1, true));
+        }
+    }
     let grid = page.view.is_grid();
     let album = matches!(&page.view, View::Album { .. });
     ui.hero.set_visible(album);
@@ -268,6 +303,14 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
             artist.set_max_width_chars(18);
             card.append(&title);
             card.append(&artist);
+            if matches!(page.view, View::Discovery { .. }) && !item.detail.is_empty() {
+                let category = label(&item.detail, "eyebrow");
+                category.set_margin_top(7);
+                category.set_ellipsize(pango::EllipsizeMode::End);
+                category.set_width_chars(1);
+                category.set_max_width_chars(18);
+                card.append(&category);
+            }
             let button = gtk::Button::new();
             button.add_css_class("album-card-button");
             button.set_halign(gtk::Align::Start);
@@ -348,6 +391,14 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
     let noun = match &page.view {
         View::Albums => "saved albums",
         View::SearchAlbums(_) => "albums",
+        View::Discovery {
+            section: Some(section),
+            ..
+        } if section.to_lowercase().contains("album") => "albums",
+        View::Discovery {
+            section: Some(section),
+            ..
+        } if section.to_lowercase().contains("track") => "tracks",
         View::Explore | View::Discovery { .. } => "discoveries",
         View::Playlists => "playlists",
         View::Favorites => "favorite tracks",
@@ -566,6 +617,12 @@ fn build(app: &gtk::Application) {
     ));
     toolbar.append(&quality_select);
     main.append(&toolbar);
+    let discovery_filters = hbox(6);
+    discovery_filters.add_css_class("discovery-filters");
+    let filter_scroll = gtk::ScrolledWindow::new();
+    filter_scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
+    filter_scroll.set_child(Some(&discovery_filters));
+    main.append(&filter_scroll);
     let error_text = label("", "error-banner");
     error_text.set_wrap(true);
     error_text.set_hexpand(true);
@@ -654,6 +711,7 @@ fn build(app: &gtk::Application) {
     let save_album = gtk::Button::with_label("Save album");
     save_album.add_css_class("primary");
     hero.append(&save_album);
+    let mode = Rc::new(Cell::new(0usize));
     let visualizer = gtk::DrawingArea::new();
     visualizer.add_css_class("visualizer");
     visualizer.set_accessible_role(gtk::AccessibleRole::Img);
@@ -661,8 +719,88 @@ fn build(app: &gtk::Application) {
     visualizer.set_content_height(150);
     visualizer.update_property(&[gtk::accessible::Property::Label("Vines audio visualizer")]);
     hero.append(&visualizer);
-    hero.append(&label("VINES  /  AUDIO REACTIVE", "eyebrow"));
+    let viz_controls = hbox(4);
+    let viz_mode = label(visualizer::MODES[0], "eyebrow");
+    viz_mode.set_hexpand(true);
+    let next_viz = icon_button("go-next-symbolic", "Next visualizer");
+    let expand_viz = icon_button("view-fullscreen-symbolic", "Expand visualizer");
+    viz_controls.append(&viz_mode);
+    viz_controls.append(&next_viz);
+    viz_controls.append(&expand_viz);
+    hero.append(&viz_controls);
+    {
+        let mode = mode.clone();
+        let area = visualizer.clone();
+        next_viz.connect_clicked(move |_| {
+            mode.set((mode.get() + 1) % visualizer::MODES.len());
+            let name = visualizer::MODES[mode.get()];
+            viz_mode.set_text(name);
+            area.update_property(&[gtk::accessible::Property::Label(&format!(
+                "{name} audio visualizer"
+            ))]);
+            area.queue_draw();
+        });
+    }
+    {
+        let state = state.clone();
+        let mode = mode.clone();
+        let app = app.clone();
+        expand_viz.connect_clicked(move |_| {
+            let mode = Rc::new(Cell::new(mode.get()));
+            let win = gtk::ApplicationWindow::builder()
+                .application(&app)
+                .title("TIDAL Visualizer")
+                .default_width(1100)
+                .default_height(700)
+                .build();
+            win.add_css_class("tidal-window");
+            let body = vbox(8);
+            let top = hbox(12);
+            top.set_margin_start(16);
+            top.set_margin_end(16);
+            let title = label(visualizer::MODES[mode.get()], "page-title");
+            title.set_hexpand(true);
+            top.append(&title);
+            let cycle = gtk::Button::with_label("Next visualizer");
+            top.append(&cycle);
+            let close = gtk::Button::with_label("Close visualizer");
+            top.append(&close);
+            body.append(&top);
+            let area = gtk::DrawingArea::new();
+            area.add_css_class("visualizer");
+            area.set_vexpand(true);
+            body.append(&area);
+            visualizer::attach(&area, state.clone(), mode.clone());
+            win.set_child(Some(&body));
+            {
+                let mode = mode.clone();
+                cycle.connect_clicked(move |_| {
+                    mode.set((mode.get() + 1) % visualizer::MODES.len());
+                    title.set_text(visualizer::MODES[mode.get()]);
+                });
+            }
+            {
+                let win = win.clone();
+                close.connect_clicked(move |_| win.close());
+            }
+            let keys = gtk::EventControllerKey::new();
+            {
+                let win = win.clone();
+                keys.connect_key_pressed(move |_, key, _, _| {
+                    if key == gdk::Key::Escape {
+                        win.close();
+                        return glib::Propagation::Stop;
+                    }
+                    glib::Propagation::Proceed
+                });
+            }
+            win.add_controller(keys);
+            win.present();
+            win.fullscreen();
+        });
+    }
     let hero_scroll = gtk::ScrolledWindow::new();
+    hero_scroll.set_hexpand(false);
     hero_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     hero_scroll.set_child(Some(&hero));
     listening.append(&hero_scroll);
@@ -752,6 +890,7 @@ fn build(app: &gtk::Application) {
         window: window.clone(),
         title,
         toolbar: toolbar.clone(),
+        discovery_filters,
         hero,
         hero_art,
         hero_title,
@@ -791,58 +930,7 @@ fn build(app: &gtk::Application) {
         album_search: search_albums.clone(),
     };
     let updating = Rc::new(Cell::new(false));
-    {
-        let state = state.clone();
-        let phase = Cell::new(0.0);
-        ui.visualizer.set_draw_func(move |area, cr, w, h| {
-            let state = state.borrow();
-            let level = state
-                .last_playback
-                .as_ref()
-                .filter(|p| !p.paused)
-                .map(|p| p.level)
-                .unwrap_or(0.0);
-            let color = area.color();
-            cr.set_source_rgba(
-                color.red() as f64,
-                color.green() as f64,
-                color.blue() as f64,
-                0.8,
-            );
-            cr.set_line_width(1.5);
-            if state.last_playback.as_ref().is_some_and(|p| !p.paused) {
-                phase.set(phase.get() + 0.033);
-            }
-            let t = phase.get();
-            for vine in 0..9 {
-                for x in 0..w {
-                    let xf = x as f64 / w as f64;
-                    let envelope = (xf * std::f64::consts::PI).sin();
-                    let y = h as f64 * 0.5
-                        + (xf * 14.0 + t * 2.0 + vine as f64 * 0.38).sin()
-                            * envelope
-                            * (8.0 + level * 55.0)
-                        + (vine as f64 - 4.0) * 5.0;
-                    if x == 0 {
-                        cr.move_to(x as f64, y);
-                    } else {
-                        cr.line_to(x as f64, y);
-                    }
-                }
-                let _ = cr.stroke();
-            }
-        });
-        let area = ui.visualizer.downgrade();
-        glib::timeout_add_local(Duration::from_millis(33), move || {
-            let Some(area) = area.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            if area.is_mapped() {
-                area.queue_draw();
-            }
-            glib::ControlFlow::Continue
-        });
-    }
+    visualizer::attach(&ui.visualizer, state.clone(), mode);
     {
         let ui = ui.clone();
         let state = state.clone();
@@ -1160,6 +1248,7 @@ fn build(app: &gtk::Application) {
                         ui.title
                             .update_state(&[gtk::accessible::State::Busy(false)]);
                         ui.toolbar.set_visible(false);
+                        ui.discovery_filters.set_visible(false);
                         ui.search.set_text("");
                         ui.search.set_sensitive(false);
                         ui.back.set_sensitive(false);

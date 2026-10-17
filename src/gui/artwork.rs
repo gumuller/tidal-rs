@@ -48,10 +48,13 @@ impl Artwork {
         let widget: Self = glib::Object::new();
         widget.imp().size.set(size);
         widget.add_css_class("cover");
+        widget.set_accessible_role(gtk::AccessibleRole::Img);
+        widget.update_property(&[gtk::accessible::Property::Label("Artwork")]);
         widget
     }
     pub fn set_texture(&self, texture: &gdk::Texture) {
         self.imp().texture.replace(Some(texture.clone()));
+        self.update_property(&[gtk::accessible::Property::Description("Artwork loaded")]);
         self.queue_draw();
     }
 }

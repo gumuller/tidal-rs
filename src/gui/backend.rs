@@ -14,20 +14,33 @@ pub const PAGE_SIZE: u32 = 48;
 #[derive(Clone, Debug)]
 pub enum View {
     Explore,
-    Discovery { path: String, title: String },
+    Discovery {
+        path: String,
+        title: String,
+        section: Option<String>,
+    },
     SearchAlbums(String),
     Favorites,
     Albums,
     Playlists,
-    Album { id: u64, title: String },
-    Playlist { id: String, title: String },
+    Album {
+        id: u64,
+        title: String,
+    },
+    Playlist {
+        id: String,
+        title: String,
+    },
     Search(String),
 }
 impl View {
     pub fn title(&self) -> String {
         match self {
             Self::Explore => "Explore".into(),
-            Self::Discovery { title, .. } => title.clone(),
+            Self::Discovery { title, section, .. } => section
+                .as_ref()
+                .map(|s| format!("{title} · {s}"))
+                .unwrap_or_else(|| title.clone()),
             Self::SearchAlbums(q) => format!("Albums for “{q}”"),
             Self::Favorites => "Favorite tracks".into(),
             Self::Albums => "Your albums".into(),
@@ -37,12 +50,19 @@ impl View {
         }
     }
     pub fn is_grid(&self) -> bool {
+        if let Self::Discovery {
+            section: Some(section),
+            ..
+        } = self
+        {
+            return !section.to_lowercase().contains("track");
+        }
         matches!(
             self,
             Self::Albums
                 | Self::Playlists
                 | Self::Explore
-                | Self::Discovery { .. }
+                | Self::Discovery { section: None, .. }
                 | Self::SearchAlbums(_)
         )
     }
@@ -68,6 +88,7 @@ pub struct Page {
     pub view: View,
     pub page: u32,
     pub total: usize,
+    pub sections: Vec<String>,
     pub items: Vec<Item>,
 }
 #[derive(Clone)]
@@ -140,46 +161,89 @@ async fn fetch(
     epoch: u64,
 ) -> Result<(Page, Vec<Track>), Box<dyn std::error::Error>> {
     let offset = page.saturating_sub(1).saturating_mul(PAGE_SIZE);
+    let mut sections = vec![];
     let (items, total, tracks) = match view {
         View::Explore | View::Discovery { .. } => {
-            // Refresh through the SDK before using the pages endpoint it does not expose.
             client.favorite_tracks(Some(0), Some(1), None, None).await?;
             let path = match view {
                 View::Discovery { path, .. } => path.as_str(),
                 _ => "pages/explore",
             };
-            if !path.starts_with("pages/") || path.contains("..") || path.contains(['?', '#', ':'])
-            {
-                return Err("Invalid discovery path".into());
+            let mut value = discovery_page(client, path, 0).await?;
+            sections = modules(&value)
+                .filter(|m| {
+                    matches!(
+                        m["type"].as_str(),
+                        Some("ALBUM_LIST" | "TRACK_LIST" | "PLAYLIST_LIST")
+                    )
+                })
+                .filter_map(|m| {
+                    m["title"]
+                        .as_str()
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_owned)
+                })
+                .collect();
+            let selected = match view {
+                View::Discovery {
+                    section: Some(section),
+                    ..
+                } => Some(section.as_str()),
+                _ => None,
+            };
+            if let Some(section) = selected {
+                let module = modules(&value)
+                    .find(|m| m["title"].as_str() == Some(section))
+                    .cloned();
+                if let Some(mut module) = module {
+                    if let Some(path) = module["pagedList"]["dataApiPath"].as_str() {
+                        let list = discovery_page(client, path, offset).await?;
+                        module["pagedList"] = list;
+                    }
+                    value = json!({"rows":[{"modules":[module]}]});
+                } else {
+                    value = json!({"rows":[]});
+                }
             }
-            let auth = client.get_authz().ok_or("Please sign in")?;
-            let response = reqwest::Client::builder()
-                .timeout(Duration::from_secs(25))
-                .build()?
-                .get(format!("https://api.tidal.com/v1/{path}"))
-                .bearer_auth(&auth.access_token)
-                .query(&[
-                    ("countryCode", client.get_country_code()),
-                    ("deviceType", "BROWSER".into()),
-                    ("locale", "en_US".into()),
-                ])
-                .send()
-                .await?
-                .error_for_status()?
-                .text()
-                .await?;
-            let value: serde_json::Value = serde_json::from_str(&response)?;
-            let all = discovery_items(&value);
-            let total = all.len();
-            (
-                all.into_iter()
-                    .skip(offset as usize)
-                    .take(PAGE_SIZE as usize)
-                    .collect(),
-                total,
-                vec![],
-            )
+            let is_tracks = selected.is_some_and(|s| s.to_lowercase().contains("track"));
+            if is_tracks {
+                let mut tracks = vec![];
+                let mut total = 0;
+                for module in modules(&value).filter(|m| m["type"] == "TRACK_LIST") {
+                    total += module["pagedList"]["totalNumberOfItems"]
+                        .as_u64()
+                        .unwrap_or(0) as usize;
+                    if let Some(items) = module["pagedList"]["items"].as_array() {
+                        for item in items {
+                            tracks.push(serde_json::from_value::<Track>(item.clone())?);
+                        }
+                    }
+                }
+                (track_items(&tracks), total, tracks)
+            } else {
+                let all = discovery_items(&value);
+                let remote = if selected.is_some() {
+                    modules(&value)
+                        .filter_map(|m| m["pagedList"]["totalNumberOfItems"].as_u64())
+                        .max()
+                        .unwrap_or(all.len() as u64) as usize
+                } else {
+                    all.len()
+                };
+                let already_paged = selected.is_some()
+                    && modules(&value).any(|m| m["pagedList"]["offset"].as_u64().unwrap_or(0) > 0);
+                let total = remote.max(all.len());
+                (
+                    all.into_iter()
+                        .skip(if already_paged { 0 } else { offset as usize })
+                        .take(PAGE_SIZE as usize)
+                        .collect(),
+                    total,
+                    vec![],
+                )
+            }
         }
+
         View::SearchAlbums(query) => {
             let albums: tidalrs::List<tidalrs::Album> =
                 catalog_search(client, "albums", query, offset).await?;
@@ -282,10 +346,47 @@ async fn fetch(
             view: view.clone(),
             page,
             total,
+            sections,
             items,
         },
         tracks,
     ))
+}
+
+fn modules(value: &serde_json::Value) -> impl Iterator<Item = &serde_json::Value> {
+    value["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|row| row["modules"].as_array().into_iter().flatten())
+}
+async fn discovery_page(
+    client: &TidalClient,
+    path: &str,
+    offset: u32,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    if !path.starts_with("pages/") || path.contains("..") || path.contains(['?', '#', ':']) {
+        return Err("Invalid discovery path".into());
+    }
+    let auth = client.get_authz().ok_or("Please sign in")?;
+    let body = reqwest::Client::builder()
+        .timeout(Duration::from_secs(25))
+        .build()?
+        .get(format!("https://api.tidal.com/v1/{path}"))
+        .bearer_auth(&auth.access_token)
+        .query(&[
+            ("countryCode", client.get_country_code()),
+            ("deviceType", "BROWSER".into()),
+            ("locale", "en_US".into()),
+            ("offset", offset.to_string()),
+            ("limit", PAGE_SIZE.to_string()),
+        ])
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    Ok(serde_json::from_str(&body)?)
 }
 
 async fn catalog_search<T: serde::de::DeserializeOwned>(
@@ -332,15 +433,19 @@ fn request_art(
     pending: &mut HashSet<String>,
     http: &reqwest::Client,
     limit: &Arc<Semaphore>,
+    auth: Option<Arc<Authz>>,
+    country: String,
     tx: &mpsc::Sender<Event>,
 ) {
     for key in keys {
-        if key.len() != 36
-            || !key.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
+        if (!(key.len() == 36 && key.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-'))
+            && !key.starts_with("section:pages/"))
             || !pending.insert(key.clone())
         {
             continue;
         }
+        let auth = auth.clone();
+        let country = country.clone();
         let http = http.clone();
         let limit = limit.clone();
         let tx = tx.clone();
@@ -348,11 +453,51 @@ fn request_art(
             let Ok(_permit) = limit.acquire().await else {
                 return;
             };
-            let path = art_cache().join(format!("{key}.jpg"));
+            let path = art_cache().join(format!("{}.jpg", key.replace(['/', ':'], "_")));
             if !path.exists() {
+                let image_key = if let Some(section) = key.strip_prefix("section:") {
+                    if section.contains("..") || section.contains(['?', '#', ':']) {
+                        return;
+                    }
+                    let Some(auth) = auth else {
+                        return;
+                    };
+                    let Ok(response) = http
+                        .get(format!("https://api.tidal.com/v1/{section}"))
+                        .bearer_auth(&auth.access_token)
+                        .query(&[("countryCode", country.as_str()), ("deviceType", "BROWSER")])
+                        .send()
+                        .await
+                    else {
+                        return;
+                    };
+                    let Ok(body) = response.text().await else {
+                        return;
+                    };
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
+                        return;
+                    };
+                    let Some(cover) = discovery_items(&value)
+                        .into_iter()
+                        .filter_map(|i| i.cover)
+                        .find(|k| !k.starts_with("section:"))
+                    else {
+                        return;
+                    };
+                    cover
+                } else {
+                    key.clone()
+                };
+                if image_key.len() != 36
+                    || !image_key
+                        .bytes()
+                        .all(|c| c.is_ascii_hexdigit() || c == b'-')
+                {
+                    return;
+                }
                 let url = format!(
                     "https://resources.tidal.com/images/{}/320x320.jpg",
-                    key.replace('-', "/")
+                    image_key.replace('-', "/")
                 );
                 let Ok(response) = http.get(url).send().await else {
                     return;
@@ -475,7 +620,7 @@ pub fn spawn() -> (
                                 Action::Browse{view,page,epoch}=>{
                                     let c=client.as_ref().ok_or("Please sign in to your account")?;
                                     let (page,tracks)=fetch(c,&view,page,epoch).await?;
-                                    request_art(page.items.iter().filter_map(|i|i.cover.clone()).collect(),&mut art_pending,&http,&art_limit,&tx);
+                                    request_art(page.items.iter().filter_map(|i|i.cover.clone()).collect(),&mut art_pending,&http,&art_limit,c.get_authz(),c.get_country_code(),&tx);
                                     listing=tracks;listing_epoch=epoch;let _=tx.send(Event::Page(page));
                                 },
                                 Action::Play{index,epoch}=>{
@@ -523,7 +668,7 @@ pub fn spawn() -> (
                                 }
                             }
                             if let Some(state)=playback(&library,p){
-                                request_art(state.cover.clone().into_iter().collect(),&mut art_pending,&http,&art_limit,&tx);
+                                request_art(state.cover.clone().into_iter().collect(),&mut art_pending,&http,&art_limit,client.as_ref().and_then(|c|c.get_authz()),client.as_ref().map(|c|c.get_country_code()).unwrap_or_default(),&tx);
                                 let _=tx.send(Event::Playback(state));
                             }
                         }
@@ -576,7 +721,10 @@ fn discovery_items(value: &serde_json::Value) -> Vec<Item> {
                             } else if kind.starts_with("PAGE_LINKS")
                                 && text("apiPath").starts_with("pages/")
                             {
-                                (Key::Discovery(text("apiPath")), None)
+                                (
+                                    Key::Discovery(text("apiPath")),
+                                    Some(format!("section:{}", text("apiPath"))),
+                                )
                             } else {
                                 continue;
                             };
