@@ -1505,6 +1505,44 @@ fn build(app: &gtk::Application) {
     }
     let status = gio::SimpleAction::new_stateful("status", None, &"{}".to_variant());
     app.add_action(&status);
+    let frequency_action = gio::SimpleAction::new_stateful(
+        "spectrum",
+        None,
+        &serde_json::json!({"bins": vec![0.0; spectrum::BANDS], "sequence": 0, "live": false})
+            .to_string()
+            .to_variant(),
+    );
+    app.add_action(&frequency_action);
+    {
+        let window = window.clone();
+        let state = state.clone();
+        let source = spectrum::shared();
+        let last = Cell::new((0, false));
+        glib::timeout_add_local(Duration::from_millis(16), move || {
+            if window.application().is_none() {
+                return glib::ControlFlow::Break;
+            }
+            let frame = source.lock().unwrap().clone();
+            let live = state
+                .borrow()
+                .last_playback
+                .as_ref()
+                .is_some_and(|p| !p.paused)
+                && frame
+                    .at
+                    .is_some_and(|at| at.elapsed() < Duration::from_millis(250));
+            let key = (if live { frame.sequence } else { 0 }, live);
+            if last.replace(key) != key {
+                let bins = if live {
+                    frame.bins
+                } else {
+                    [0.0; spectrum::BANDS]
+                };
+                frequency_action.set_state(&serde_json::json!({"bins": bins.as_slice(), "sequence": frame.sequence, "live": live}).to_string().to_variant());
+            }
+            glib::ControlFlow::Continue
+        });
+    }
     {
         let ui = ui.clone();
         let state = state.clone();
@@ -1521,7 +1559,7 @@ fn build(app: &gtk::Application) {
                 .and_then(|path| glib::filename_to_uri(path, None).ok())
                 .map(|uri| uri.to_string());
             let data = serde_json::json!({
-                "running": true, "version": env!("CARGO_PKG_VERSION"), "visible": ui.window.is_visible(),
+                "running": true, "version": env!("CARGO_PKG_VERSION"), "spectrum_available": true, "visible": ui.window.is_visible(),
                 "title": current.map(|p| p.title.as_str()).unwrap_or(""),
                 "artist": current.map(|p| p.artist.as_str()).unwrap_or(""),
                 "album": current.map(|p| p.album_title.as_str()).unwrap_or(""),

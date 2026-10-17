@@ -379,8 +379,39 @@ def inner():
         control("toggle-playback")
         wait(lambda:mpv_query("pause") is False,"resume while hidden")
         wait(lambda:remote_status().get("paused") is False,"hidden playback metadata continues updating")
-        control("toggle-playback")
-        wait(lambda:remote_status().get("paused") is True,"pause while hidden")
+        # One persistent D-Bus subscription must deliver real FFT data while
+        # the GTK window is hidden, without spawning a process for each frame.
+        import selectors
+        stream=subprocess.Popen([str(ROOT / "target/debug/tidal-rs"),"control","spectrum"],env=app_env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        selector=selectors.DefaultSelector()
+        selector.register(stream.stdout,selectors.EVENT_READ)
+        pending=b""
+        def spectrum_packets(seconds):
+            nonlocal pending
+            packets=[];deadline=time.monotonic()+seconds
+            while time.monotonic()<deadline:
+                if not selector.select(0.1): continue
+                chunk=os.read(stream.stdout.fileno(),65536)
+                if not chunk: raise AssertionError("Spectrum subscriber exited early")
+                pending+=chunk
+                while b"\n" in pending:
+                    line,pending=pending.split(b"\n",1)
+                    packets.append(json.loads(line))
+            return packets
+        try:
+            packets=spectrum_packets(1.5)
+            live=[p for p in packets if p.get("live")]
+            assert len(live)>=35,f"Too few real spectrum frames: {len(live)}"
+            assert all(len(p["bins"])==64 and all(0<=b<=1 for b in p["bins"]) for p in live),"Invalid FFT frame"
+            assert any(max(p["bins"])>0.02 for p in live),"Stream contains no audio energy"
+            report["spectrum_stream_fps"]=round(len(live)/1.5,1)
+            control("toggle-playback")
+            wait(lambda:remote_status().get("paused") is True,"pause while hidden")
+            stopped=spectrum_packets(0.7)
+            assert any(p.get("live") is False and not any(p["bins"]) for p in stopped),"Paused spectrum did not clear"
+        finally:
+            stream.terminate();stream.wait(timeout=3);selector.close()
+        report["checks"].append("persistent D-Bus spectrum subscription delivers real 64-band FFT while hidden and clears on pause")
         control("show")
         wait(lambda:window() and remote_status().get("visible"),"show restores the same player")
         control("toggle-window")

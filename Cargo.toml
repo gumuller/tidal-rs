@@ -1,6 +1,6 @@
 [package]
 name = "tidal-rs"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "Experimental Rust Linux TIDAL library and streaming client"
 license = "MIT"

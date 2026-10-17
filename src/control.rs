@@ -3,13 +3,14 @@ use gtk::{gio, glib, prelude::*};
 use std::{
     collections::HashMap,
     error::Error,
+    io::{self, Write},
     process::{Command, Stdio},
 };
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let command = args.first().map(String::as_str).unwrap_or("status");
     let (action, parameter) = match command {
-        "status" | "show" | "hide" | "toggle-window" | "toggle-playback" | "next" | "previous" | "quit" => {
+        "status" | "spectrum" | "show" | "hide" | "toggle-window" | "toggle-playback" | "next" | "previous" | "quit" => {
             if args.len() > 1 { return Err("This control takes no argument".into()); }
             (command, None)
         }
@@ -21,7 +22,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             }
             (command, Some(value.to_variant()))
         }
-        _ => return Err("Unknown control; use status, show, hide, toggle-window, toggle-playback, next, previous, volume, seek, or quit".into()),
+        _ => return Err("Unknown control; use status, spectrum, show, hide, toggle-window, toggle-playback, next, previous, volume, seek, or quit".into()),
     };
     let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)?;
     let id = std::env::var("TIDAL_APP_ID").unwrap_or_else(|_| "io.github.tidalrs.Player".into());
@@ -52,6 +53,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         return Err("TIDAL Rust is not running; use tidal-rs control show".into());
+    }
+    if command == "spectrum" {
+        return stream_spectrum(&bus, &id, &path);
     }
     if command == "status" {
         let result = bus.call_sync(
@@ -87,5 +91,68 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             gio::Cancellable::NONE,
         )?;
     }
+    Ok(())
+}
+
+fn stream_spectrum(bus: &gio::DBusConnection, id: &str, path: &str) -> Result<(), Box<dyn Error>> {
+    let main_loop = glib::MainLoop::new(None, false);
+    let on_frame = main_loop.clone();
+    let _frames = bus.subscribe_to_signal(
+        Some(id),
+        Some("org.gtk.Actions"),
+        Some("Changed"),
+        Some(path),
+        None,
+        gio::DBusSignalFlags::NONE,
+        move |signal| {
+            let changes = glib::VariantDict::new(Some(&signal.parameters.child_value(2)));
+            if let Ok(Some(frame)) = changes.lookup::<String>("spectrum") {
+                let mut output = io::stdout().lock();
+                if writeln!(output, "{frame}")
+                    .and_then(|_| output.flush())
+                    .is_err()
+                {
+                    on_frame.quit();
+                }
+            }
+        },
+    );
+    let on_exit = main_loop.clone();
+    let _owner = bus.subscribe_to_signal(
+        Some("org.freedesktop.DBus"),
+        Some("org.freedesktop.DBus"),
+        Some("NameOwnerChanged"),
+        Some("/org/freedesktop/DBus"),
+        Some(id),
+        gio::DBusSignalFlags::NONE,
+        move |signal| {
+            if signal.parameters.child_value(2).str() == Some("") {
+                on_exit.quit();
+            }
+        },
+    );
+    let on_disconnect = main_loop.clone();
+    bus.connect_closed(move |_, _, _| on_disconnect.quit());
+    let initial = bus.call_sync(
+        Some(id),
+        path,
+        "org.gtk.Actions",
+        "Describe",
+        Some(&("spectrum",).to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        3000,
+        gio::Cancellable::NONE,
+    )?;
+    let frame = initial
+        .child_value(0)
+        .child_value(2)
+        .child_value(0)
+        .as_variant()
+        .and_then(|v| v.get::<String>())
+        .ok_or("Upgrade the player for spectrum streaming")?;
+    writeln!(io::stdout().lock(), "{frame}")?;
+    io::stdout().flush()?;
+    main_loop.run();
     Ok(())
 }

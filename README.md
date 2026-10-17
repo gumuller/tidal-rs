@@ -12,7 +12,7 @@ Download the `.pkg.tar.zst` from the [latest release](https://github.com/gumulle
 verify it against the release's `SHA256SUMS`, then install it:
 
 ```sh
-sudo pacman -U ./tidal-rs-0.6.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tidal-rs-0.6.1-1-x86_64.pkg.tar.zst
 ```
 
 Pacman installs the required GTK4, mpv, PulseAudio client tools and desktop
@@ -25,8 +25,8 @@ bundle (system libraries are required; this is not an AppImage):
 
 ```sh
 sudo pacman -S --needed gtk4 mpv libpulse xdg-utils
-tar -xzf tidal-rs-0.6.0-linux-x86_64.tar.gz
-cd tidal-rs-0.6.0-linux-x86_64
+tar -xzf tidal-rs-0.6.1-linux-x86_64.tar.gz
+cd tidal-rs-0.6.1-linux-x86_64
 ./install.sh
 ```
 
@@ -47,7 +47,7 @@ optional project; install the player first, then:
 omarchy plugin add https://github.com/gumuller/omarchy-tidal.git --enable
 ```
 
-The plugin provides artwork, play/pause, next/previous, seeking, volume and
+The plugin provides artwork, a live 64-band FFT spectrum, play/pause, next/previous, seeking, volume and
 show/hide controls from the bar. Hide the player using its header button,
 `Ctrl+H`, or the plugin; playback continues. Reopen it from the launcher or
 plugin. Closing the window or `Ctrl+Q` exits the app.
@@ -56,6 +56,7 @@ The same public session D-Bus controls are available without the plugin:
 
 ```sh
 tidal-rs control status                  # JSON metadata; no credentials or stream URLs
+tidal-rs control spectrum                # live 64-band FFT JSONL until stopped
 tidal-rs control show                    # starts the GUI if it is closed
 tidal-rs control hide
 tidal-rs control toggle-window

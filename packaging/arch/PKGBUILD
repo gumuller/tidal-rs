@@ -1,6 +1,6 @@
 # Maintainer: Gustavo Muller <https://github.com/gumuller>
 pkgname=tidal-rs
-pkgver=0.6.0
+pkgver=0.6.1
 pkgrel=1
 pkgdesc='Native Rust/GTK4 TIDAL music player with FFT visualizations'
 arch=('x86_64')
