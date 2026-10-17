@@ -306,11 +306,43 @@ fn album_card(
     }
     root
 }
+fn heart_icon(filled: bool) -> gtk::DrawingArea {
+    let icon = gtk::DrawingArea::new();
+    icon.set_content_width(20);
+    icon.set_content_height(20);
+    icon.set_halign(gtk::Align::Center);
+    icon.set_valign(gtk::Align::Center);
+    icon.set_accessible_role(gtk::AccessibleRole::Presentation);
+    icon.set_draw_func(move |widget, cr, width, height| {
+        let size = width.min(height) as f64;
+        cr.translate((width as f64 - size) / 2.0, (height as f64 - size) / 2.0);
+        cr.scale(size / 20.0, size / 20.0);
+        let color = widget.color();
+        cr.set_source_rgba(
+            color.red().into(),
+            color.green().into(),
+            color.blue().into(),
+            color.alpha().into(),
+        );
+        cr.move_to(10.0, 17.5);
+        cr.curve_to(8.0, 15.8, 1.5, 11.2, 1.5, 6.8);
+        cr.curve_to(1.5, 1.8, 7.5, 0.8, 10.0, 5.0);
+        cr.curve_to(12.5, 0.8, 18.5, 1.8, 18.5, 6.8);
+        cr.curve_to(18.5, 11.2, 12.0, 15.8, 10.0, 17.5);
+        cr.close_path();
+        if filled {
+            let _ = cr.fill();
+        } else {
+            cr.set_line_width(1.5);
+            let _ = cr.stroke();
+        }
+    });
+    icon
+}
+
 fn set_heart(button: &gtk::ToggleButton, active: bool, loaded: bool) {
     button.set_active(active);
-    let glyph = gtk::Label::new(Some(if active { "♥︎" } else { "♡" }));
-    glyph.set_accessible_role(gtk::AccessibleRole::Presentation);
-    button.set_child(Some(&glyph));
+    button.set_child(Some(&heart_icon(active)));
     button.set_sensitive(loaded);
     let text = if active {
         "Remove album from favorites"
@@ -901,7 +933,13 @@ fn build(app: &gtk::Application) {
         let button = gtk::Button::new();
         button.add_css_class("side-nav");
         let row = hbox(12);
-        row.append(&gtk::Image::from_icon_name(icon));
+        if text == "Favorite tracks" {
+            row.append(&heart_icon(true));
+        } else {
+            let image = gtk::Image::from_icon_name(icon);
+            image.set_pixel_size(20);
+            row.append(&image);
+        }
         row.append(&label(text, ""));
         button.set_child(Some(&row));
         if text == "Home" {
@@ -914,24 +952,34 @@ fn build(app: &gtk::Application) {
     let stretch = vbox(0);
     stretch.set_vexpand(true);
     sidebar.append(&stretch);
-    let theme_label = label(&format!("●  {}", theme.name), "theme-chip");
+    let footer = vbox(8);
+    footer.add_css_class("sidebar-footer");
+    sidebar.append(&footer);
+    let theme_row = hbox(12);
+    theme_row.add_css_class("sidebar-theme");
+    theme_row.append(&label("Theme", "small"));
+    let theme_label = label(&theme.name, "small");
+    theme_label.set_hexpand(true);
+    theme_label.set_ellipsize(pango::EllipsizeMode::End);
     theme_label.set_tooltip_text(Some("Follows your Omarchy theme automatically"));
-    sidebar.append(&theme_label);
+    theme_row.append(&theme_label);
+    footer.append(&theme_row);
+    let account_actions = hbox(8);
+    account_actions.add_css_class("sidebar-account");
     let account = label("Connecting…", "muted");
     account.add_css_class("small");
-    account.set_margin_start(10);
-    account.set_margin_top(20);
-    sidebar.append(&account);
-    let account_actions = hbox(4);
-    account_actions.set_margin_top(6);
+    account.set_hexpand(true);
+    account.set_ellipsize(pango::EllipsizeMode::End);
+    account_actions.append(&account);
     let reconnect = gtk::Button::with_label("Sign in");
     reconnect.set_visible(false);
     reconnect.add_css_class("small");
     let logout = icon_button("system-log-out-symbolic", "Sign out of TIDAL");
+    logout.add_css_class("sidebar-signout");
     logout.set_sensitive(false);
     account_actions.append(&reconnect);
     account_actions.append(&logout);
-    sidebar.append(&account_actions);
+    footer.append(&account_actions);
     let main = vbox(0);
     main.set_hexpand(true);
     body.append(&main);
@@ -1712,7 +1760,7 @@ fn build(app: &gtk::Application) {
                         }
                         ui.sign_in.set_visible(false);
                         ui.sign_out.set_sensitive(true);
-                        ui.account.set_text("●  Account connected");
+                        ui.account.set_text("Account connected");
                         ui.login_button.set_sensitive(true);
                         navigate(&ui, &state, &tx, View::Home, 1, false);
                     }
@@ -1853,7 +1901,7 @@ fn build(app: &gtk::Application) {
             let css = theme.css();
             if css != state.borrow().theme_css {
                 provider.load_from_string(&css);
-                ui.theme.set_text(&format!("●  {}", theme.name));
+                ui.theme.set_text(&theme.name);
                 state.borrow_mut().theme_css = css;
             }
             glib::ControlFlow::Continue

@@ -9,6 +9,10 @@
 .tidal-window .eyebrow { font-size: 10px; letter-spacing: 2px; font-weight: 700; color: @tidal_muted; }
 .tidal-window .side-nav { padding: 12px 14px; border-radius: 0; font-weight: 600; }
 .tidal-window .side-nav.active { background: @tidal_selection; color: @tidal_accent; }
+.tidal-window .sidebar-footer { border-top: 1px solid alpha(@tidal_muted,0.18); padding: 16px 12px 0; }
+.tidal-window .sidebar-theme { color: @tidal_muted; min-height: 24px; }
+.tidal-window .sidebar-account { min-height: 32px; }
+.tidal-window .sidebar-signout { min-width: 28px; min-height: 28px; padding: 2px; color: @tidal_muted; }
 .tidal-window .muted { color: @tidal_muted; }
 .tidal-window .small { font-size: 11px; }
 .tidal-window .header { padding: 26px 32px 18px; }
