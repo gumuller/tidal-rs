@@ -1,0 +1,77 @@
+[
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 223847,
+    "snippet": ",r),{addEventListener:(v,D)=>t.addListener(v,D),cancelPreload:()=>{i({command:\"media.cancelpreload\"})},disableMQADecoder:()=>{i({command:\"media.mqa.decoder.disable\"})},enableMQADecoder:()=>{i({command:\"media.mqa.decoder.enable\"})},listDevices:()=>{i({command:\"media.device.list\"})},load:(v,D,k=\"\")="
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 223906,
+    "snippet": "ad:()=>{i({command:\"media.cancelpreload\"})},disableMQADecoder:()=>{i({command:\"media.mqa.decoder.disable\"})},enableMQADecoder:()=>{i({command:\"media.mqa.decoder.enable\"})},listDevices:()=>{i({command:\"media.device.list\"})},load:(v,D,k=\"\")=>{i({command:\"media.load\",encryptionKey:k,streamFormat:D,ur"
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 223970,
+    "snippet": "=>{i({command:\"media.mqa.decoder.disable\"})},enableMQADecoder:()=>{i({command:\"media.mqa.decoder.enable\"})},listDevices:()=>{i({command:\"media.device.list\"})},load:(v,D,k=\"\")=>{i({command:\"media.load\",encryptionKey:k,streamFormat:D,url:v})},on:(v,D)=>{t.on(v,D)},pause:()=>{i({command:\"media.pause\""
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224028,
+    "snippet": "der:()=>{i({command:\"media.mqa.decoder.enable\"})},listDevices:()=>{i({command:\"media.device.list\"})},load:(v,D,k=\"\")=>{i({command:\"media.load\",encryptionKey:k,streamFormat:D,url:v})},on:(v,D)=>{t.on(v,D)},pause:()=>{i({command:\"media.pause\"})},play:()=>{i({command:\"media.play\"})},preload:(v,D,k=\"\""
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224080,
+    "snippet": "stDevices:()=>{i({command:\"media.device.list\"})},load:(v,D,k=\"\")=>{i({command:\"media.load\",encryptionKey:k,streamFormat:D,url:v})},on:(v,D)=>{t.on(v,D)},pause:()=>{i({command:\"media.pause\"})},play:()=>{i({command:\"media.play\"})},preload:(v,D,k=\"\")=>{i({command:\"media.preload\",encryptionKey:k,strea"
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224177,
+    "snippet": "tionKey:k,streamFormat:D,url:v})},on:(v,D)=>{t.on(v,D)},pause:()=>{i({command:\"media.pause\"})},play:()=>{i({command:\"media.play\"})},preload:(v,D,k=\"\")=>{i({command:\"media.preload\",encryptionKey:k,streamFormat:D,url:v})},recover:(v,D=\"\")=>{i({command:\"media.recover\",encryptionKey:D,url:v})},release"
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224215,
+    "snippet": "v,D)=>{t.on(v,D)},pause:()=>{i({command:\"media.pause\"})},play:()=>{i({command:\"media.play\"})},preload:(v,D,k=\"\")=>{i({command:\"media.preload\",encryptionKey:k,streamFormat:D,url:v})},recover:(v,D=\"\")=>{i({command:\"media.recover\",encryptionKey:D,url:v})},releaseDevice:()=>{i({command:\"media.device.r"
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224263,
+    "snippet": "ause\"})},play:()=>{i({command:\"media.play\"})},preload:(v,D,k=\"\")=>{i({command:\"media.preload\",encryptionKey:k,streamFormat:D,url:v})},recover:(v,D=\"\")=>{i({command:\"media.recover\",encryptionKey:D,url:v})},releaseDevice:()=>{i({command:\"media.device.release\"})},removeEventListener:(v,D)=>t.removeLi"
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224349,
+    "snippet": "reload\",encryptionKey:k,streamFormat:D,url:v})},recover:(v,D=\"\")=>{i({command:\"media.recover\",encryptionKey:D,url:v})},releaseDevice:()=>{i({command:\"media.device.release\"})},removeEventListener:(v,D)=>t.removeListener(v,D),seek:v=>{i({command:\"media.seek\",time:v})},selectDevice:(v,D)=>{i({command"
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224420,
+    "snippet": "ommand:\"media.recover\",encryptionKey:D,url:v})},releaseDevice:()=>{i({command:\"media.device.release\"})},removeEventListener:(v,D)=>t.removeListener(v,D),seek:v=>{i({command:\"media.seek\",time:v})},selectDevice:(v,D)=>{i({command:\"media.device.select\",device:v,options:{mode:D}})},selectSystemDevice:"
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224515,
+    "snippet": "ease\"})},removeEventListener:(v,D)=>t.removeListener(v,D),seek:v=>{i({command:\"media.seek\",time:v})},selectDevice:(v,D)=>{i({command:\"media.device.select\",device:v,options:{mode:D}})},selectSystemDevice:()=>{i({command:\"media.device.select\",device:{id:\"SystemControlled\"}})},setVolume:v=>{i({comman"
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224570,
+    "snippet": "D),seek:v=>{i({command:\"media.seek\",time:v})},selectDevice:(v,D)=>{i({command:\"media.device.select\",device:v,options:{mode:D}})},selectSystemDevice:()=>{i({command:\"media.device.select\",device:{id:\"SystemControlled\"}})},setVolume:v=>{i({command:\"media.volume\",volume:v})},stop:()=>{i({command:\"medi"
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224656,
+    "snippet": "evice.select\",device:v,options:{mode:D}})},selectSystemDevice:()=>{i({command:\"media.device.select\",device:{id:\"SystemControlled\"}})},setVolume:v=>{i({command:\"media.volume\",volume:v})},stop:()=>{i({command:\"media.stop\"})}}},d_=()=>{const t=xn();let r;t.registerMessages([P.NAVIGATE_ABOUT,P.NAVIGAT"
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224737,
+    "snippet": "dia.device.select\",device:{id:\"SystemControlled\"}})},setVolume:v=>{i({command:\"media.volume\",volume:v})},stop:()=>{i({command:\"media.stop\"})}}},d_=()=>{const t=xn();let r;t.registerMessages([P.NAVIGATE_ABOUT,P.NAVIGATE_BACK,P.NAVIGATE_FORWARD,P.NAVIGATE_REFRESH_PROFILE,P.NAVIGATE_SEARCH_FOCUS,P.NA"
+  },
+  {
+    "file": "app/clientInterface/index.js",
+    "byte_offset": 224785,
+    "snippet": "}})},setVolume:v=>{i({command:\"media.volume\",volume:v})},stop:()=>{i({command:\"media.stop\"})}}},d_=()=>{const t=xn();let r;t.registerMessages([P.NAVIGATE_ABOUT,P.NAVIGATE_BACK,P.NAVIGATE_FORWARD,P.NAVIGATE_REFRESH_PROFILE,P.NAVIGATE_SEARCH_FOCUS,P.NAVIGATE_STRIPE_LINKING,P.NAVIGATE_STRIPE_RETURN,P"
+  }
+]

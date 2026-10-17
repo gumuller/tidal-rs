@@ -1,0 +1,18 @@
+[package]
+name = "tidal-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Experimental Rust Linux TIDAL library and streaming client"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tidalrs = { version = "0.6.2", default-features = false }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "time", "io-std", "io-util"] }
+base64 = "0.23"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+gtk = { version = "0.11", package = "gtk4", features = ["v4_12"] }
+toml = "1"
+
+[profile.dev]
+debug = 0

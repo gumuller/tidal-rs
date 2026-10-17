@@ -1,0 +1,55 @@
+.tidal-window { background: @tidal_bg; color: @tidal_fg; font-family: sans-serif; font-size: 13px; }
+.tidal-window * { outline-color: @tidal_accent; }
+.tidal-window button { box-shadow: none; text-shadow: none; background-image: none; border: none; border-radius: 6px; color: @tidal_fg; background-color: transparent; padding: 8px 10px; min-height: 20px; }
+.tidal-window button:hover { background-color: @tidal_raised; }
+.tidal-window button:disabled { opacity: 0.35; }
+.tidal-window button:focus-visible { outline: 2px solid @tidal_accent; outline-offset: -2px; }
+.tidal-window .sidebar { background: @tidal_surface; border-right: 1px solid alpha(@tidal_muted,0.14); padding: 28px 16px 16px; }
+.tidal-window .brand { font-size: 26px; font-weight: 800; letter-spacing: 5px; }
+.tidal-window .eyebrow { font-size: 10px; letter-spacing: 2px; font-weight: 700; color: @tidal_muted; }
+.tidal-window .side-nav { padding: 12px 14px; border-radius: 5px; font-weight: 600; }
+.tidal-window .side-nav.active { background: @tidal_selection; color: @tidal_accent; }
+.tidal-window .muted { color: @tidal_muted; }
+.tidal-window .small { font-size: 11px; }
+.tidal-window .header { padding: 26px 32px 18px; }
+.tidal-window .page-title { font-size: 29px; font-weight: 750; letter-spacing: -0.7px; }
+.tidal-window .subtitle { color: @tidal_muted; margin-top: 5px; }
+.tidal-window .toolbar { padding: 0 32px 18px; background: @tidal_bg; box-shadow: none; }
+.tidal-window .theme-chip { background: @tidal_raised; border-radius: 4px; padding: 7px 10px; font-size: 10px; color: @tidal_muted; }
+.tidal-window .primary { background: @tidal_accent; color: @tidal_bg; font-weight: 700; padding: 10px 18px; }
+.tidal-window .primary:hover { background: lighter(@tidal_accent); }
+.tidal-window .tidal-search { background: @tidal_surface; border: 1px solid alpha(@tidal_muted,0.22); border-radius: 6px; box-shadow: none; color: @tidal_fg; min-height: 32px; padding: 3px 10px; }
+.tidal-window .tidal-search:focus-within { border-color: @tidal_accent; }
+.tidal-window .tidal-search text { background: transparent; color: @tidal_fg; }
+.tidal-window dropdown > button { background: @tidal_bg; }
+.tidal-window .content { padding: 0 26px 22px; }
+.tidal-window flowboxchild { padding: 6px; border-radius: 5px; }
+.tidal-window flowboxchild:selected { background: @tidal_selection; }
+.tidal-window flowboxchild:hover { background: alpha(@tidal_muted,0.08); }
+.tidal-window .album-card { padding: 0; }
+.tidal-window .album-card-button { padding: 0; border-radius: 2px; }
+.tidal-window .album-card-button:hover { background: transparent; }
+.tidal-window .track-button { padding: 0; background: transparent; }
+.tidal-window .track-button:hover { background: transparent; }
+.tidal-window .cover { background: @tidal_raised; border-radius: 4px; }
+.tidal-window .cover-placeholder { color: alpha(@tidal_muted,0.5); }
+.tidal-window .card-title { font-size: 12px; font-weight: 650; margin-top: 11px; }
+.tidal-window .card-artist { color: @tidal_muted; font-size: 11px; margin-top: 3px; }
+.tidal-window list { background: transparent; color: @tidal_fg; }
+.tidal-window list row { padding: 8px 12px; border-radius: 5px; border-bottom: 1px solid alpha(@tidal_muted,0.09); }
+.tidal-window list row:hover { background: alpha(@tidal_muted,0.07); }
+.tidal-window list row:selected { background: @tidal_selection; }
+.tidal-window .track-title { font-weight: 600; }
+.tidal-window .table-head { color: @tidal_muted; font-size: 10px; letter-spacing: 1.2px; padding: 8px 12px 13px; }
+.tidal-window .now-playing { background: @tidal_surface; border-top: 1px solid alpha(@tidal_muted,0.17); padding: 14px 24px; }
+.tidal-window .play-toggle { background: @tidal_accent; color: @tidal_bg; border-radius: 50%; min-width: 26px; min-height: 26px; padding: 7px; }
+.tidal-window .play-toggle:hover { background: lighter(@tidal_accent); }
+.tidal-window scale { padding: 6px 0; }
+.tidal-window scale trough { background: @tidal_raised; min-height: 3px; border: none; }
+.tidal-window scale highlight { background: @tidal_accent; border: none; margin: 0; padding: 0; min-width: 0; min-height: 0; }
+.tidal-window scale slider { background: @tidal_accent; border: none; margin: -3px; min-width: 9px; min-height: 9px; box-shadow: none; }
+.tidal-window .error-banner { background: @tidal_selection; padding: 10px 20px; color: @tidal_fg; }
+.tidal-window .empty-title { font-size: 24px; font-weight: 700; }
+.tidal-window .pagination { padding: 12px 32px; border-top: 1px solid alpha(@tidal_muted,0.1); }
+.tidal-window scrollbar { background: transparent; }
+.tidal-window scrollbar slider { background: alpha(@tidal_muted,0.35); border-radius: 4px; min-width: 5px; }
