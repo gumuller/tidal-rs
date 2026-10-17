@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 use tidal_rs::{Command, parse_signal, read_frame};
+mod control;
 mod gui;
 mod online;
 mod theme;
@@ -13,6 +14,13 @@ mod theme;
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let mode = args.first().map(String::as_str).unwrap_or("help");
+    if mode == "--version" {
+        println!("tidal-rs {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if mode == "control" {
+        return control::run(&args[1..]);
+    }
     if mode == "gui" {
         gui::run();
         return Ok(());
@@ -27,6 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!(
             "tidal-rs — native Linux music client\n\n\
             gui                Open the native GTK4 music player\n\
+            control COMMAND    Control playback or show/hide the running player\n\
             translate          Read observed command JSONL; emit proposed mpv JSONL\n\
             signals            Read player signal JSONL; normalize optional prefixes\n\
             send SOCKET        Translate commands and send to a running mpv IPC socket\n\n\

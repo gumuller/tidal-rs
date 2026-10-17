@@ -299,6 +299,7 @@ fn album_card(
         button.connect_clicked(move |_| activate(&ui, &state, &tx, index));
     }
     let root = gtk::Overlay::new();
+    root.set_halign(gtk::Align::Start);
     root.set_child(Some(&button));
     if let Key::Album(id) = item.key {
         root.add_overlay(&album_heart(id, state, tx));
@@ -912,6 +913,7 @@ fn build(app: &gtk::Application) {
     root.append(&body);
     let sidebar = vbox(0);
     sidebar.set_width_request(192);
+    sidebar.set_hexpand(false);
     sidebar.add_css_class("sidebar");
     body.append(&sidebar);
     let brand = label("TIDAL", "brand");
@@ -1455,12 +1457,98 @@ fn build(app: &gtk::Application) {
         toggle_action.connect_activate(move |_, _| send(&tx, Action::Toggle));
     }
     app.add_action(&toggle_action);
+    for (name, command) in [("next", Action::Next), ("previous", Action::Previous)] {
+        let action = gio::SimpleAction::new(name, None);
+        let tx = tx.clone();
+        action.connect_activate(move |_, _| {
+            send(
+                &tx,
+                match command {
+                    Action::Next => Action::Next,
+                    _ => Action::Previous,
+                },
+            )
+        });
+        app.add_action(&action);
+    }
+    for name in ["show", "hide", "toggle-window"] {
+        let action = gio::SimpleAction::new(name, None);
+        let ui = ui.clone();
+        action.connect_activate(move |_, _| {
+            if name == "hide" || (name == "toggle-window" && ui.window.is_visible()) {
+                let expanded = ui.expanded.borrow().clone();
+                if let Some(expanded) = expanded {
+                    expanded.close();
+                }
+                ui.window.set_visible(false);
+            } else {
+                ui.window.present();
+            }
+        });
+        app.add_action(&action);
+    }
+    for name in ["volume", "seek"] {
+        let action = gio::SimpleAction::new(name, Some(glib::VariantTy::DOUBLE));
+        let volume = volume.clone();
+        let ui = ui.clone();
+        action.connect_activate(move |_, value| {
+            if let Some(value) = value.and_then(|v| v.get::<f64>()).filter(|v| v.is_finite()) {
+                if name == "volume" {
+                    volume.set_value(value.clamp(0.0, 100.0));
+                } else {
+                    ui.seek
+                        .set_value(value.clamp(0.0, ui.seek.adjustment().upper()));
+                }
+            }
+        });
+        app.add_action(&action);
+    }
+    let status = gio::SimpleAction::new_stateful("status", None, &"{}".to_variant());
+    app.add_action(&status);
+    {
+        let ui = ui.clone();
+        let state = state.clone();
+        let volume = volume.clone();
+        glib::timeout_add_local(Duration::from_millis(200), move || {
+            if ui.window.application().is_none() {
+                return glib::ControlFlow::Break;
+            }
+            let s = state.borrow();
+            let current = s.last_playback.as_ref();
+            let cover = current
+                .and_then(|p| p.cover.as_ref())
+                .and_then(|key| s.art.get(key))
+                .and_then(|path| glib::filename_to_uri(path, None).ok())
+                .map(|uri| uri.to_string());
+            let data = serde_json::json!({
+                "running": true, "version": env!("CARGO_PKG_VERSION"), "visible": ui.window.is_visible(),
+                "title": current.map(|p| p.title.as_str()).unwrap_or(""),
+                "artist": current.map(|p| p.artist.as_str()).unwrap_or(""),
+                "album": current.map(|p| p.album_title.as_str()).unwrap_or(""),
+                "cover": cover, "paused": current.is_none_or(|p| p.paused),
+                "position": current.map(|p| p.position).unwrap_or(0.0),
+                "duration": current.map(|p| p.duration).unwrap_or(0.0),
+                "quality": current.map(|p| p.quality.as_str()).unwrap_or(""),
+                "volume": volume.value(), "can_play": current.is_some(),
+                "can_next": current.is_some_and(|p| p.can_next),
+                "can_previous": current.is_some_and(|p| p.can_previous)
+            }).to_string();
+            if status.state().and_then(|v| v.get::<String>()).as_deref() != Some(&data) {
+                status.set_state(&data.to_variant());
+            }
+            glib::ControlFlow::Continue
+        });
+    }
     let quit_action = gio::SimpleAction::new("quit", None);
     {
         let window = window.clone();
         quit_action.connect_activate(move |_, _| window.close());
     }
     app.add_action(&quit_action);
+    app.set_accels_for_action("app.hide", &["<Control>h"]);
+    let hide = icon_button("window-minimize-symbolic", "Hide player · Ctrl+H");
+    hide.set_action_name(Some("app.hide"));
+    header.append(&hide);
 
     for (index, button) in ui.nav.iter().enumerate() {
         let ui = ui.clone();
@@ -1663,7 +1751,7 @@ fn build(app: &gtk::Application) {
         let tx = tx.clone();
         let updating = updating.clone();
         glib::timeout_add_local(Duration::from_millis(8), move || {
-            if !ui.window.is_visible() {
+            if ui.window.application().is_none() {
                 return glib::ControlFlow::Break;
             }
             while let Ok(event) = events.try_recv() {
@@ -1886,7 +1974,7 @@ fn build(app: &gtk::Application) {
         let ui = ui.clone();
         let state = state.clone();
         glib::timeout_add_local(Duration::from_secs(2), move || {
-            if !ui.window.is_visible() {
+            if ui.window.application().is_none() {
                 return glib::ControlFlow::Break;
             }
             let theme = Theme::load();

@@ -1,0 +1,27 @@
+pkgbase = tidal-rs
+	pkgdesc = Native Rust/GTK4 TIDAL music player with FFT visualizations
+	pkgver = 0.6.0
+	pkgrel = 1
+	url = https://github.com/gumuller/tidal-rs
+	arch = x86_64
+	license = MIT
+	makedepends = rust
+	makedepends = cargo
+	makedepends = git
+	makedepends = cmake
+	makedepends = python
+	depends = gtk4>=4.12
+	depends = glib2
+	depends = glibc
+	depends = gcc-libs
+	depends = mpv
+	depends = libpulse
+	depends = xdg-utils
+	optdepends = pipewire-pulse: PulseAudio-compatible audio server
+	optdepends = ttf-jetbrains-mono-nerd: console-style interface font
+	options = !lto
+	options = !debug
+	source = git+https://github.com/gumuller/tidal-rs.git#tag=v0.6.0
+	sha256sums = SKIP
+
+pkgname = tidal-rs

@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Name=TIDAL Rust
+Comment=Native Linux music player for your TIDAL library
+Exec=tidal-rs gui
+Icon=io.github.tidalrs.Player
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true
+StartupWMClass=io.github.tidalrs.Player
+Actions=Toggle;Show;Hide;
+
+[Desktop Action Toggle]
+Name=Play / Pause
+Exec=tidal-rs control toggle-playback
+
+[Desktop Action Show]
+Name=Show player
+Exec=tidal-rs control show
+
+[Desktop Action Hide]
+Name=Hide player
+Exec=tidal-rs control hide

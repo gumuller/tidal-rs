@@ -13,3 +13,10 @@ The client can override them with `TIDAL_CLIENT_ID` and `TIDAL_CLIENT_SECRET`.
 No user tokens, passwords or private session data are included in this project.
 The new application code was written independently; no reference implementation
 source files were incorporated.
+
+Release bundles and Arch packages include a `dependencies`/`licenses` directory
+with the locked Rust crates' license files and a `DEPENDENCIES.md` inventory.
+System GTK4, mpv, libpulse and other shared libraries remain separately installed
+system packages, subject to their own licenses. The app icon is original project
+artwork; TIDAL artwork and account content are fetched only at runtime and are
+not bundled.

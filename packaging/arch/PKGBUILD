@@ -1,0 +1,37 @@
+# Maintainer: Gustavo Muller <https://github.com/gumuller>
+pkgname=tidal-rs
+pkgver=0.6.0
+pkgrel=1
+pkgdesc='Native Rust/GTK4 TIDAL music player with FFT visualizations'
+arch=('x86_64')
+url='https://github.com/gumuller/tidal-rs'
+license=('MIT')
+depends=('gtk4>=4.12' 'glib2' 'glibc' 'gcc-libs' 'mpv' 'libpulse' 'xdg-utils')
+makedepends=('rust' 'cargo' 'git' 'cmake' 'python')
+optdepends=('pipewire-pulse: PulseAudio-compatible audio server'
+            'ttf-jetbrains-mono-nerd: console-style interface font')
+source=("git+$url.git#tag=v$pkgver")
+sha256sums=('SKIP')
+options=('!lto' '!debug')
+
+build() {
+  cd "$srcdir/tidal-rs"
+  cargo build --release --locked
+  python scripts/collect-licenses.py "$srcdir/licenses"
+}
+
+check() {
+  cd "$srcdir/tidal-rs"
+  cargo test --locked
+}
+
+package() {
+  cd "$srcdir/tidal-rs"
+  install -Dm755 "${CARGO_TARGET_DIR:-target}/release/tidal-rs" "$pkgdir/usr/bin/tidal-rs"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  cp -r "$srcdir/licenses" "$pkgdir/usr/share/licenses/$pkgname/dependencies"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 THIRD_PARTY.md "$pkgdir/usr/share/doc/$pkgname/THIRD_PARTY.md"
+  cp -r packaging/share/applications "$pkgdir/usr/share/"
+  cp -r packaging/share/icons "$pkgdir/usr/share/"
+}

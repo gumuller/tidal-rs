@@ -1,17 +1,88 @@
-# tidal-rs
+# TIDAL Rust
 
-An experimental native Rust/GTK4 TIDAL client for Linux and Omarchy, with album
-artwork, saved albums, favorite tracks, playlists, catalog search, and online
-playback through mpv. It also retains a terminal client and the original player
-protocol workbench.
+An unofficial native Rust/GTK4 TIDAL music player for Linux. Built for a flat,
+console-inspired desktop, with Omarchy theme support, live streaming, discovery,
+album hearts, listening history and real FFT visualizations. Requires a TIDAL
+account and a subscription that permits the requested playback quality.
+This project is independent of TIDAL and is not endorsed by TIDAL.
 
-Local Git history starts at `v0.1.0`; discovery and album listening are `v0.2.0`. Genre releases, section artwork
-and six visualization modes are `v0.3.0`. The console-style interface, infinite
-scrolling, autocomplete and FFT spectrum replace those effects in `v0.4.0`.
-`v0.5.0` adds persisted playback settings, album hearts, Home/history and
-additional visualizations driven by FFT frequencies.
-This covers the requested discovery and album workflows; full Windows feature
-parity remains ongoing.
+## Install on Omarchy / Arch Linux (x86_64)
+
+Download the `.pkg.tar.zst` from the [latest release](https://github.com/gumuller/tidal-rs/releases/latest),
+verify it against the release's `SHA256SUMS`, then install it:
+
+```sh
+sudo pacman -U ./tidal-rs-0.6.0-1-x86_64.pkg.tar.zst
+```
+
+Pacman installs the required GTK4, mpv, PulseAudio client tools and desktop
+integration. Use **TIDAL Rust** in the launcher or `tidal-rs gui`. Authorize in
+TIDAL's browser page; passwords are never entered into this client. Omarchy's
+PipeWire PulseAudio compatibility service provides audio and spectrum capture.
+
+For an installation without root, the release also provides a native binary
+bundle (system libraries are required; this is not an AppImage):
+
+```sh
+sudo pacman -S --needed gtk4 mpv libpulse xdg-utils
+tar -xzf tidal-rs-0.6.0-linux-x86_64.tar.gz
+cd tidal-rs-0.6.0-linux-x86_64
+./install.sh
+```
+
+The bundle installs to `~/.local/bin` and `~/.local/share`; keep `~/.local/bin`
+in your PATH. `./install.sh --uninstall` removes it. Remove a pacman installation
+with `sudo pacman -R tidal-rs`. Both methods preserve your login and local data.
+These binaries target current Arch/Omarchy x86_64. Other distributions should
+build from source with Rust, GTK4 4.12+, a C/C++ toolchain and CMake; binaries
+built on rolling Arch may require newer system libraries than those systems ship.
+
+## Optional Omarchy controller
+
+The player works independently of Omarchy. The companion
+[omarchy-tidal](https://github.com/gumuller/omarchy-tidal) plugin is a separate,
+optional project; install the player first, then:
+
+```sh
+omarchy plugin add https://github.com/gumuller/omarchy-tidal.git --enable
+```
+
+The plugin provides artwork, play/pause, next/previous, seeking, volume and
+show/hide controls from the bar. Hide the player using its header button,
+`Ctrl+H`, or the plugin; playback continues. Reopen it from the launcher or
+plugin. Closing the window or `Ctrl+Q` exits the app.
+
+The same public session D-Bus controls are available without the plugin:
+
+```sh
+tidal-rs control status                  # JSON metadata; no credentials or stream URLs
+tidal-rs control show                    # starts the GUI if it is closed
+tidal-rs control hide
+tidal-rs control toggle-window
+tidal-rs control toggle-playback
+tidal-rs control next
+tidal-rs control previous
+tidal-rs control volume 35
+tidal-rs control seek 60                  # absolute seconds
+tidal-rs control quit
+```
+
+Controls use `org.gtk.Actions` on `io.github.tidalrs.Player` on your session bus.
+Hiding retains the same window, queue, session and playback worker. Removing the
+plugin does not remove or disable the player. This interface is local to your
+user session and does not start a network control server.
+
+## Build and packaging
+
+```sh
+cargo build --release --locked
+./target/release/tidal-rs gui
+scripts/package-release.sh               # binary bundle + dependency notices + checksums
+cd packaging/arch && makepkg             # source build of the published version
+```
+
+GitHub Actions repeats offline tests and packaging in Arch Linux for release
+tags. Live account/GUI tests run locally, with isolated state and silent audio.
 
 ## Graphical interface
 
@@ -99,7 +170,7 @@ Results and screenshots are written to `test-results/gui-e2e-*` (gitignored).
 The suite verifies narrow/wide layouts, removed platform subtitle, incremental
 loading without page buttons, genre releases, loaded artwork, autocomplete
 selection, album saving, real streaming, pause/seek/volume/next, the bottom-art
-expanded view, real FFT data and measured spectrum redraw rate, live palettes,
+album navigation, real FFT data and measured spectrum redraw rate, live palettes,
 sign-out, clean close, and GTK warnings/panics. It creates a temporary silent
 audio sink so PCM monitoring is tested without audible playback, then removes
 it. Account checks allow the independently running main app to refresh its
