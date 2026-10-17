@@ -126,8 +126,16 @@ impl Player {
         DirBuilder::new().mode(0o700).create(&dir)?;
         let socket = dir.join("mpv.sock");
         let mut process = Command::new("mpv");
-        if silent {
+        if silent && std::env::var_os("TIDAL_TEST_SINK").is_none() {
             process.arg("--ao=null");
+        } else {
+            process.arg("--ao=pulse").arg(format!(
+                "--audio-client-name=tidal-rs-{}",
+                std::process::id()
+            ));
+            if let Ok(sink) = std::env::var("TIDAL_TEST_SINK") {
+                process.arg(format!("--audio-device=pulse/{sink}"));
+            }
         }
         let mut child = process
             .args([
@@ -137,7 +145,6 @@ impl Player {
                 "--no-terminal",
                 "--volume=35",
                 "--keep-open=yes",
-                "--af=@meter:lavfi=[astats=metadata=1:reset=1]",
             ])
             .arg(format!("--input-ipc-server={}", socket.display()))
             .stdin(Stdio::null())

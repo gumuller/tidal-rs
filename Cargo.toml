@@ -1,6 +1,6 @@
 [package]
 name = "tidal-rs"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "Experimental Rust Linux TIDAL library and streaming client"
 
@@ -13,6 +13,7 @@ base64 = "0.23"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 gtk = { version = "0.11", package = "gtk4", features = ["v4_12"] }
 toml = "1"
+rustfft = "6.4.1"
 
 [profile.dev]
 debug = 0

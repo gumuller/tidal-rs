@@ -188,3 +188,30 @@ waveform samples. Offline render checks assert that each mode paints a
 nonblank, distinct frame and responds to changed audio energy. Native E2E
 checks cover mode switching/fullscreen, loaded category images, new-release
 pagination and playback from a genre's New Tracks list.
+
+
+## v0.4.0 console interface and real spectrum
+
+The v0.3.0 effects were removed following user feedback. The replacement reads
+only the current mpv sink-input through PulseAudio's monitor-stream facility
+using `parec`, identified by a process-specific audio client name. RustFFT
+computes a 4096-point Hann-windowed FFT at 48 kHz with an 800-sample hop (60
+spectra per second), reduced to 64 logarithmic bands from 24 Hz to 18 kHz.
+GTK's frame-clock callback uses accumulated deadlines rather than resetting
+the clock after every draw, preserving the 60 fps target across fractional
+refresh intervals. FFT capture runs independently of API requests. Tests use
+a temporary silent sink and check real frame counts, measured draw rate, and
+known-frequency/silence FFT output. No microphone or global desktop mix is read.
+
+The native UI removes the platform subtitle, uses flat square surfaces and a
+monospace font, and opens an expanded player from the bottom artwork. The
+expanded view includes artwork, the playing queue, controls and the spectrum.
+Debounced catalog completions use generation checks to discard stale responses.
+Lists append batches as the scrollbar approaches the end, retain existing
+widgets, and extend the active queue only when it belongs to that listing.
+The passive footer reports loading progress; page-navigation buttons are gone.
+
+Research references: mpv audio-client-name and PulseAudio output options at
+https://mpv.io/manual/stable/ ; application-specific stream monitoring at
+https://wiki.freedesktop.org/www/Software/PulseAudio/Documentation/Developer/Clients/WritingVolumeControlUIs/ ;
+FFT planning at https://docs.rs/rustfft/latest/rustfft/ .

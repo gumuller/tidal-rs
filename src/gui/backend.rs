@@ -94,20 +94,35 @@ pub struct Page {
 #[derive(Clone)]
 pub struct Playback {
     pub title: String,
+    pub album_title: String,
     pub artist: String,
     pub cover: Option<String>,
     pub position: f64,
     pub duration: f64,
     pub paused: bool,
     pub quality: String,
-    pub level: f64,
     pub can_next: bool,
     pub can_previous: bool,
 }
 pub enum Action {
-    Browse { view: View, page: u32, epoch: u64 },
-    Play { index: usize, epoch: u64 },
-    SaveAlbum { id: u64 },
+    Browse {
+        view: View,
+        page: u32,
+        epoch: u64,
+    },
+    Play {
+        index: usize,
+        epoch: u64,
+    },
+    Suggest {
+        query: String,
+        generation: u64,
+        albums: bool,
+    },
+    PlayQueued(usize),
+    SaveAlbum {
+        id: u64,
+    },
     Toggle,
     Next,
     Previous,
@@ -119,7 +134,12 @@ pub enum Action {
     Shutdown,
 }
 pub enum Event {
-    Level(f64),
+    Suggestions {
+        query: String,
+        generation: u64,
+        items: Vec<Item>,
+    },
+    Queue(Vec<Item>),
     AlbumSaved(u64),
     Ready,
     NeedsLogin,
@@ -417,6 +437,49 @@ async fn catalog_search<T: serde::de::DeserializeOwned>(
     Ok(serde_json::from_str(&body)?)
 }
 
+async fn suggestions(
+    auth: &Authz,
+    country: &str,
+    query: &str,
+    albums: bool,
+) -> Result<Vec<Item>, Box<dyn std::error::Error>> {
+    let kind = if albums { "albums" } else { "tracks" };
+    let body = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()?
+        .get(format!("https://api.tidal.com/v1/search/{kind}"))
+        .bearer_auth(&auth.access_token)
+        .query(&[("countryCode", country), ("query", query), ("limit", "6")])
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    if albums {
+        let list: tidalrs::List<tidalrs::Album> = serde_json::from_str(&body)?;
+        Ok(list
+            .items
+            .into_iter()
+            .map(|a| Item {
+                key: Key::Album(a.id),
+                title: a.title,
+                subtitle: a
+                    .artists
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                cover: a.cover,
+                detail: "Album".into(),
+                album: String::new(),
+            })
+            .collect())
+    } else {
+        let list: tidalrs::List<Track> = serde_json::from_str(&body)?;
+        Ok(track_items(&list.items))
+    }
+}
+
 fn art_cache() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -529,20 +592,6 @@ fn request_art(
     }
 }
 
-fn audio_level(player: &mut Player) -> f64 {
-    player
-        .property("af-metadata/meter")
-        .ok()
-        .and_then(|v| {
-            v.get("lavfi.astats.Overall.RMS_level")
-                .and_then(|x| x.as_str())
-                .and_then(|x| x.parse::<f64>().ok())
-        })
-        .filter(|db| db.is_finite())
-        .map(|db| ((db + 60.0) / 60.0).clamp(0.0, 1.0))
-        .unwrap_or(0.0)
-}
-
 fn playback(library: &Library, player: &mut Player) -> Option<Playback> {
     let track = library.tracks.get(library.current?)?;
     Some(Playback {
@@ -550,7 +599,7 @@ fn playback(library: &Library, player: &mut Player) -> Option<Playback> {
             .current
             .is_some_and(|i| i + 1 < library.tracks.len()),
         can_previous: library.current.is_some_and(|i| i > 0),
-        level: audio_level(player),
+        album_title: track.album.title.clone(),
         title: track.title.clone(),
         artist: artists(track),
         cover: track.album.cover.clone(),
@@ -599,11 +648,11 @@ pub fn spawn() -> (
             });
             let _=tx.send(if client.is_some(){Event::Ready}else{Event::NeedsLogin});
             let mut player:Option<Player>=None;
-            let mut library=Library::new();let mut listing=vec![];let mut listing_epoch=0;let mut volume=35.0;
+            let mut library=Library::new();let mut listing=vec![];let mut listing_epoch=0;let mut queue_epoch=None;let mut volume=35.0;
             let http=reqwest::Client::builder().timeout(Duration::from_secs(12)).build().unwrap();
             let mut art_pending=HashSet::new();let art_limit=Arc::new(Semaphore::new(6));
             let mut tick=tokio::time::interval(Duration::from_millis(700));
-            let mut meter=tokio::time::interval(Duration::from_millis(80));
+            let mut spectrum=None;
             loop {
                 tokio::select! {
                     action=rx.recv()=> {
@@ -616,12 +665,18 @@ pub fn spawn() -> (
                                     let c=online::login_with(&token_path,move |url,code|{let _=send.send(Event::LoginCode(url.into(),code.into()));}).await?;
                                     client=Some(c);let _=tx.send(Event::Ready);
                                 },
-                                Action::Logout=>{player=None;library=Library::new();client=None;if token_path.exists(){fs::remove_file(&token_path)?;}let _=tx.send(Event::NeedsLogin);},
+                                Action::Logout=>{spectrum=None;player=None;library=Library::new();client=None;if token_path.exists(){fs::remove_file(&token_path)?;}let _=tx.send(Event::NeedsLogin);},
                                 Action::Browse{view,page,epoch}=>{
                                     let c=client.as_ref().ok_or("Please sign in to your account")?;
-                                    let (page,tracks)=fetch(c,&view,page,epoch).await?;
+                                    let append=page>1&&listing_epoch==epoch;
+                                    let (mut page,tracks)=fetch(c,&view,page,epoch).await?;
                                     request_art(page.items.iter().filter_map(|i|i.cover.clone()).collect(),&mut art_pending,&http,&art_limit,c.get_authz(),c.get_country_code(),&tx);
-                                    listing=tracks;listing_epoch=epoch;let _=tx.send(Event::Page(page));
+                                    if append {
+                                        let base=listing.len();for item in &mut page.items {if let Key::Track(i)=&mut item.key{*i+=base;}}
+                                        if queue_epoch==Some(epoch){library.tracks.extend(tracks.clone());let _=tx.send(Event::Queue(track_items(&library.tracks)));}
+                                        listing.extend(tracks);
+                                    }else{listing=tracks;}
+                                    listing_epoch=epoch;let _=tx.send(Event::Page(page));
                                 },
                                 Action::Play{index,epoch}=>{
                                     if epoch!=listing_epoch{return Err("The library page changed. Select the track again.".into());}
@@ -630,9 +685,22 @@ pub fn spawn() -> (
                                         let mut p=Player::start(std::env::var_os("TIDAL_GUI_SILENT").is_some())?;
                                         p.command(json!(["set_property","volume",volume]))?;player=Some(p);
                                     }
-                                    library.tracks=listing.clone();library.current=None;
+                                    if spectrum.is_none(){spectrum=Some(super::spectrum::Monitor::start());}
+                                    library.tracks=listing.clone();library.current=None;queue_epoch=Some(epoch);
+                                    let _=tx.send(Event::Queue(track_items(&library.tracks)));
                                     let _=tx.send(Event::LoadingTrack(library.tracks[index].title.clone()));
                                     library.play(client.as_ref().ok_or("Please sign in")?,player.as_mut().unwrap(),index).await?;
+                                },
+                                Action::Suggest{query,generation,albums}=>{
+                                    if let Some(c)=client.as_ref(){if let Some(auth)=c.get_authz(){
+                                        let tx=tx.clone();let country=c.get_country_code();
+                                        tokio::spawn(async move{let items=suggestions(&auth,&country,&query,albums).await.unwrap_or_default();let _=tx.send(Event::Suggestions{query,generation,items});});
+                                    }}
+                                },
+                                Action::PlayQueued(index)=>{
+                                    if index>=library.tracks.len(){return Err("Queue changed".into());}
+                                    let _=tx.send(Event::LoadingTrack(library.tracks[index].title.clone()));
+                                    library.play(client.as_ref().ok_or("Please sign in")?,player.as_mut().ok_or("Player unavailable")?,index).await?;
                                 },
                                 Action::SaveAlbum{id}=>{
                                     client.as_ref().ok_or("Please sign in")?.add_favorite_album(id).await?;
@@ -655,9 +723,6 @@ pub fn spawn() -> (
                             Ok(())
                         }.await;
                         if let Err(e)=outcome {let _=tx.send(Event::Error(e.to_string()));}
-                    },
-                    _=meter.tick()=>{
-                        if library.current.is_some(){if let Some(p)=player.as_mut(){let _=tx.send(Event::Level(audio_level(p)));}}
                     },
                     _=tick.tick()=>{
                         if let Some(p)=player.as_mut(){

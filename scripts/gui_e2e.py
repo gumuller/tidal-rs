@@ -44,10 +44,19 @@ def outer():
                "TIDAL_E2E_OUTPUT": str(output), "GTK_A11Y": "atspi", "GIO_USE_VFS":"local",
                "GTK_USE_PORTAL":"0", "GDK_DEBUG":"no-portals",
                "TIDAL_E2E_DESKTOP_RUNTIME":os.environ["XDG_RUNTIME_DIR"]}
+        sink=f"tidal_e2e_{os.getpid()}"
+        module=subprocess.check_output(["pactl","load-module","module-null-sink",f"sink_name={sink}","sink_properties=device.description=TIDAL_E2E_Silent"],text=True).strip()
+        env["TIDAL_TEST_SINK"]=sink
+        env["PULSE_SERVER"]="unix:"+os.environ["XDG_RUNTIME_DIR"]+"/pulse/native"
         env.pop("AT_SPI_BUS_ADDRESS", None)
-        with open(output / "harness.log", "w") as harness:
-            result = subprocess.run(["dbus-run-session", "--", sys.executable, __file__, "--inner", *sys.argv[1:]], env=env, stdout=harness, stderr=harness)
-        assert session.read_bytes() == original, "The real session was modified"
+        try:
+            with open(output / "harness.log", "w") as harness:
+                result = subprocess.run(["dbus-run-session", "--", sys.executable, __file__, "--inner", *sys.argv[1:]], env=env, stdout=harness, stderr=harness)
+        finally:
+            subprocess.run(["pactl","unload-module",module],check=True)
+        assert session.exists(),"The real session was removed"
+        assert json.loads(session.read_bytes()).get("user_id")==json.loads(original).get("user_id"),"The real account changed"
+        assert session.stat().st_mode & 0o777==0o600,"Real session permissions changed"
         (state / "session.json").unlink(missing_ok=True)
         if result.returncode==0 and "--inspect" not in sys.argv:
             latest=results/"latest-gui"
@@ -143,12 +152,12 @@ def inner():
             assert node.get_component_iface().grab_focus(), f"Could not focus {name}"
             subprocess.run(["wtype", "-k", "Return"],check=True)
 
-    def window():
+    def window(title=None):
         clients = json.loads(subprocess.check_output(["hyprctl", "clients", "-j"],env={**os.environ,"XDG_RUNTIME_DIR":os.environ["TIDAL_E2E_DESKTOP_RUNTIME"]}))
-        return next((c for c in clients if c["pid"] == app.pid), None)
+        return next((c for c in clients if c["pid"] == app.pid and (title is None or c["title"]==title)), None)
 
-    def capture(name):
-        c = window()
+    def capture(name,title=None):
+        c = window(title)
         x, y = c["at"]
         w, h = c["size"]
         file = out / (name + ".png")
@@ -205,6 +214,12 @@ def inner():
                 assert x>=0 and y>=0 and x+w<=width and y+h<=height,f"Control clipped: {name} {(x,y,w,h)} vs {(width,height)}"
         report["checks"].append(f"{width}x{height} layout: {len(row)} columns, constrained album labels, controls in bounds")
 
+    def scroll_bottom():
+        bars=[n for n in nodes() if n.get_role_name()=="scroll bar" and rect(n)[3]>100 and rect(n)[2]<40]
+        assert bars,"No vertical browser scrollbar"
+        value=bars[-1].get_value_iface()
+        assert value and value.set_current_value(value.get_maximum_value()),"Could not scroll to end"
+
     def mpv_query(prop):
         sockets=list(Path(tempfile.gettempdir()).glob(f"tidal-rs-online-{app.pid}-*/mpv.sock"))
         if not sockets:return None
@@ -229,7 +244,7 @@ def inner():
             try:
                 component = n.get_component_iface()
                 box = component.get_extents(Atspi.CoordType.WINDOW) if component else None
-                rows.append({"name": n.get_name(), "role": n.get_role_name(),
+                rows.append({"name": n.get_name(), "role": n.get_role_name(), "description": n.get_description(),
                              "actions": n.get_action_iface().get_n_actions() if n.get_action_iface() else 0,
                              "box": [box.x,box.y,box.width,box.height] if box else None})
             except GLib.Error:
@@ -262,11 +277,13 @@ def inner():
         assert not find("Sign in"),"Already signed in, but redundant sign-in button is visible"
         assert not find("Next track").get_state_set().contains(Atspi.StateType.SENSITIVE),"Idle next-track control should be disabled"
         report["checks"].append("connected account UI and idle control states")
-        click("Next page")
-        wait(lambda:any(n.get_name().startswith("Page 2 of") for n in nodes()),"album page two")
-        assert cards()[0].get_name()!=first,"Pagination repeated the first page"
-        click("Previous page")
-        wait(lambda:(items:=cards()) and items[0].get_name()==first,"back to page one")
+        assert not find("RUST  /  LINUX"),"Platform subtitle remains"
+        assert not find("Next page") and not find("Previous page"),"Paging buttons remain"
+        current=cards()
+        scroll_bottom()
+        wait(lambda:len(cards())>len(current),"album infinite loading appends a batch")
+        assert cards()[0].get_name()==first,"Infinite loading replaced existing albums"
+        report["checks"].append("console styling, removed subtitle, no paging controls and incremental album loading")
         click(first)
         wait(lambda:loaded_view(first[5:]) and track_rows(),"opened album tracks")
         assert find("Play this album"), "Album action has the wrong label"
@@ -284,21 +301,26 @@ def inner():
         wait(lambda:find("Saved to your albums"),"idempotent album save acknowledged by live API")
         click("Play this album")
         wait(lambda:isinstance(mpv_query("time-pos"),(int,float)) and mpv_query("time-pos")>0.2,"album playback",timeout=40)
-        meter=wait(lambda:mpv_query("af-metadata/meter"),"audio visualization metadata")
-        assert "lavfi.astats.Overall.RMS_level" in meter,"Missing real RMS audio meter"
-        assert find("Vines audio visualizer"),"Album visualizer missing"
-        for viz in ["Neon Tunnel","Warp Drive","Plasma","Orbital","Laser Bloom","Vines"]:
-            click("Next visualizer")
-            wait(lambda:find(viz+" audio visualizer"),"visualizer mode "+viz)
-            time.sleep(0.15)
-            capture("04-viz-"+viz.lower().replace(" ","-"))
-        click("Expand visualizer")
-        wait(lambda:any(n.get_name()=="TIDAL Visualizer" and n.get_role_name()=="frame" for n in nodes()),"expanded visualizer window")
-        click("Close visualizer")
-        wait(lambda:not any(n.get_name()=="TIDAL Visualizer" and n.get_role_name()=="frame" for n in nodes()),"visualizer closes cleanly")
-        report["checks"].append("six selectable audio-reactive visualizer modes and fullscreen window")
+        spectrum=wait(lambda:find("Audio spectrum analyzer"),"real spectrum widget")
+        import re
+        def spectrum_live():
+            text=spectrum.get_description()
+            report["spectrum_metrics"]=text
+            match=re.search(r"(\d+) FFT frames; ([\d.]+) draw fps",text)
+            return match and int(match[1])>180 and 55<=float(match[2])<=65
+        wait(spectrum_live,"real PCM FFT frames and 60 fps rendering",timeout=25)
+        report["spectrum_metrics"]=spectrum.get_description()
+        assert not find("Next visualizer"),"Old visualization modes remain"
+        click("Open expanded player")
+        wait(lambda:any(n.get_name()=="Now playing" and n.get_role_name()=="frame" for n in nodes()),"bottom album art opens expanded player")
+        wait(lambda:len([n for n in nodes() if n.get_name()=="Audio spectrum analyzer"])>=2,"expanded player has spectrum")
+        wait(lambda:window("Now playing"),"expanded player mapped above main window")
+        capture("04-expanded-player","Now playing")
+        click("Close expanded player")
+        wait(lambda:not any(n.get_name()=="Now playing" and n.get_role_name()=="frame" for n in nodes()),"expanded player closes")
+        report["checks"].append("real FFT data, 60 fps spectrum and bottom artwork opens expanded player")
         capture("04-album-tracks")
-        report["checks"].append("circular play button, narrow album layout, live idempotent save, album playback and real audio meter")
+        report["checks"].append("circular play button, narrow album layout, live idempotent save, album playback and real audio spectrum")
         click("Play / pause · Space")
         wait(lambda:mpv_query("pause") is True,"pause album")
         click("Explore")
@@ -311,10 +333,9 @@ def inner():
         new_albums=wait(lambda:loaded_view("Metal · New Albums") and cards(),"new Metal albums")
         assert not track_rows(),"Album filter returned a track list"
         first_new=new_albums[0].get_name()
-        click("Next page")
-        wait(lambda:loaded_view("Metal · New Albums") and (items:=cards()) and items[0].get_name()!=first_new,"genre new album pagination")
-        click("Previous page")
-        wait(lambda:loaded_view("Metal · New Albums") and (items:=cards()) and items[0].get_name()==first_new,"genre new albums return to page one")
+        scroll_bottom()
+        wait(lambda:loaded_view("Metal · New Albums") and len(cards())>len(new_albums),"genre new releases load on scroll")
+        assert cards()[0].get_name()==first_new,"Genre loading replaced the first batch"
         assert find("New Tracks"),"Genre new-track filter missing"
         capture("04c-metal")
         click("New Tracks")
@@ -363,6 +384,15 @@ def inner():
         wait(lambda:loaded_view(playlist[5:]) and track_rows(),"playlist tracks")
         capture("07-playlist")
         report["checks"].append("playlist card activation and track listing")
+        entry=wait(lambda:find("Search TIDAL catalog"),"search input")
+        assert entry.get_editable_text_iface().set_text_contents("Radiohe")
+        focus_window()
+        subprocess.run(["wtype","-M","ctrl","-k","k","-m","ctrl"],check=True)
+        completions=wait(lambda:[n for n in nodes() if n.get_role_name()=="button" and n.get_name().startswith("Complete: ")],"catalog autocomplete",timeout=15)
+        completion=completions[0].get_name()
+        click(completion)
+        wait(lambda:loaded_view("Results for “"+completion[len("Complete: "):]+"”") and track_rows(),"autocomplete selection submits a completed search")
+        report["checks"].append("debounced autocomplete suggestions and choosing a suggestion")
         enter_search("Radiohead")
         wait(lambda:loaded_view("Results for “Radiohead”") and track_rows(),"catalog search results")
         click("Search albums")

@@ -1,8 +1,9 @@
 mod artwork;
 mod backend;
+mod spectrum;
 mod visualizer;
 use crate::theme::Theme;
-use backend::{Action, Event, Item, Key, PAGE_SIZE, Page, View};
+use backend::{Action, Event, Item, Key, Page, View};
 use gtk::{gdk, gio, glib, pango, prelude::*};
 use std::{
     cell::{Cell, RefCell},
@@ -22,6 +23,12 @@ struct State {
     epoch: u64,
     view: View,
     page: u32,
+    total: usize,
+    loading: bool,
+    queue: Vec<Item>,
+    search_generation: u64,
+    suggestion_timer: Option<glib::SourceId>,
+    completed_query: Option<String>,
     history: Vec<(View, u32)>,
     items: Vec<Item>,
     art: HashMap<String, PathBuf>,
@@ -33,6 +40,12 @@ struct State {
 #[derive(Clone)]
 struct Ui {
     window: gtk::ApplicationWindow,
+    expanded: Rc<RefCell<Option<gtk::ApplicationWindow>>>,
+    now_art_button: gtk::Button,
+    grid_scroll: gtk::ScrolledWindow,
+    track_scroll: gtk::ScrolledWindow,
+    suggestions: gtk::Popover,
+    suggestion_list: gtk::Box,
     title: gtk::Label,
     toolbar: gtk::Box,
     discovery_filters: gtk::Box,
@@ -50,10 +63,8 @@ struct Ui {
     tracks: gtk::ListBox,
     error: gtk::Revealer,
     error_text: gtk::Label,
-    previous: gtk::Button,
-    next: gtk::Button,
-    page: gtk::Label,
-    pagination: gtk::Box,
+    load_status: gtk::Label,
+    load_footer: gtk::Box,
     back: gtk::Button,
     nav: Vec<gtk::Button>,
     account: gtk::Label,
@@ -142,21 +153,28 @@ fn navigate(
     let epoch = {
         let mut s = state.borrow_mut();
         if history {
-            let last = (s.view.clone(), s.page);
+            let last = (s.view.clone(), 1);
             s.history.push(last);
         }
         s.view = view.clone();
         s.page = page;
         s.epoch += 1;
+        s.loading = true;
+        s.total = 0;
+        s.search_generation += 1;
+        if let Some(timer) = s.suggestion_timer.take() {
+            timer.remove();
+        }
         s.epoch
     };
+    ui.suggestions.popdown();
+    ui.grid_scroll.vadjustment().set_value(0.0);
+    ui.track_scroll.vadjustment().set_value(0.0);
     ui.title.set_text(&view.title());
     ui.title.update_state(&[gtk::accessible::State::Busy(true)]);
     ui.subtitle.set_text("Loading your collection…");
     ui.stack.set_visible_child_name("loading");
     ui.error.set_reveal_child(false);
-    ui.previous.set_sensitive(false);
-    ui.next.set_sensitive(false);
     ui.back.set_sensitive(!state.borrow().history.is_empty());
     for (index, button) in ui.nav.iter().enumerate() {
         let active = matches!(
@@ -226,43 +244,51 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
     if page.epoch != state.borrow().epoch {
         return;
     }
-    while let Some(child) = ui.grid.first_child() {
-        ui.grid.remove(&child);
-    }
-    while let Some(child) = ui.tracks.first_child() {
-        ui.tracks.remove(&child);
-    }
-    state.borrow_mut().covers.clear();
-    while let Some(child) = ui.discovery_filters.first_child() {
-        ui.discovery_filters.remove(&child);
-    }
-    ui.discovery_filters.set_visible(!page.sections.is_empty());
-    if let View::Discovery {
-        path,
-        title,
-        section: selected,
-    } = &page.view
-    {
-        for section in std::iter::once("All".to_owned()).chain(page.sections.iter().cloned()) {
-            let button = gtk::Button::with_label(&section);
-            let section = if section == "All" {
-                None
-            } else {
-                Some(section)
-            };
-            if &section == selected {
-                button.add_css_class("active");
+    let append = page.page > 1;
+    let base = if append {
+        state.borrow().items.len()
+    } else {
+        0
+    };
+    if !append {
+        while let Some(child) = ui.grid.first_child() {
+            ui.grid.remove(&child);
+        }
+        while let Some(child) = ui.tracks.first_child() {
+            ui.tracks.remove(&child);
+        }
+        state.borrow_mut().covers.clear();
+        while let Some(child) = ui.discovery_filters.first_child() {
+            ui.discovery_filters.remove(&child);
+        }
+        ui.discovery_filters.set_visible(!page.sections.is_empty());
+        if let View::Discovery {
+            path,
+            title,
+            section: selected,
+        } = &page.view
+        {
+            for section in std::iter::once("All".to_owned()).chain(page.sections.iter().cloned()) {
+                let button = gtk::Button::with_label(&section);
+                let section = if section == "All" {
+                    None
+                } else {
+                    Some(section)
+                };
+                if &section == selected {
+                    button.add_css_class("active");
+                }
+                let view = View::Discovery {
+                    path: path.clone(),
+                    title: title.clone(),
+                    section,
+                };
+                let ui = ui.clone();
+                let state = state.clone();
+                let tx = tx.clone();
+                ui.discovery_filters.append(&button);
+                button.connect_clicked(move |_| navigate(&ui, &state, &tx, view.clone(), 1, true));
             }
-            let view = View::Discovery {
-                path: path.clone(),
-                title: title.clone(),
-                section,
-            };
-            let ui = ui.clone();
-            let state = state.clone();
-            let tx = tx.clone();
-            ui.discovery_filters.append(&button);
-            button.connect_clicked(move |_| navigate(&ui, &state, &tx, view.clone(), 1, true));
         }
     }
     let grid = page.view.is_grid();
@@ -281,7 +307,8 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
         ui.hero_artist
             .set_text(first.map(|i| i.subtitle.as_str()).unwrap_or(""));
     }
-    for (index, item) in page.items.iter().enumerate() {
+    for (local_index, item) in page.items.iter().enumerate() {
+        let index = base + local_index;
         if grid {
             let card = vbox(0);
             card.add_css_class("album-card");
@@ -383,11 +410,6 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
     let count = page.total;
     ui.title
         .update_state(&[gtk::accessible::State::Busy(false)]);
-    let pages = if album {
-        1
-    } else {
-        (count as u32).div_ceil(PAGE_SIZE).max(1)
-    };
     let noun = match &page.view {
         View::Albums => "saved albums",
         View::SearchAlbums(_) => "albums",
@@ -405,18 +427,31 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
         _ => "tracks",
     };
     ui.subtitle.set_text(&format!("{count} {noun}"));
-    ui.page.set_text(&format!("Page {} of {pages}", page.page));
-    ui.previous.set_sensitive(page.page > 1);
-    ui.next.set_sensitive(page.page < pages);
+    ui.load_status
+        .set_text(&format!("{} / {count} loaded", base + page.items.len()));
     ui.content
         .set_visible_child_name(if grid { "grid" } else { "tracks" });
-    ui.stack.set_visible_child_name(if page.items.is_empty() {
-        "empty"
+    ui.stack
+        .set_visible_child_name(if page.items.is_empty() && base == 0 {
+            "empty"
+        } else {
+            "content"
+        });
+    ui.load_footer.set_visible(!album && count > 0);
+    let mut s = state.borrow_mut();
+    s.page = page.page;
+    s.total = count;
+    s.loading = false;
+    if append {
+        s.items.extend(page.items);
     } else {
-        "content"
-    });
-    ui.pagination.set_visible(!page.items.is_empty() && !album);
-    state.borrow_mut().items = page.items;
+        s.items = page.items;
+    }
+    drop(s);
+    if !append {
+        ui.grid_scroll.vadjustment().set_value(0.0);
+        ui.track_scroll.vadjustment().set_value(0.0);
+    }
 }
 
 fn playback(
@@ -459,6 +494,174 @@ fn playback(
     state.borrow_mut().last_playback = Some(value);
 }
 
+fn load_more(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>) {
+    let request = {
+        let mut s = state.borrow_mut();
+        if s.loading || s.items.len() >= s.total || matches!(s.view, View::Album { .. }) {
+            return;
+        }
+        s.loading = true;
+        (s.view.clone(), s.page + 1, s.epoch)
+    };
+    ui.load_status.set_text("Loading more…");
+    ui.title.update_state(&[gtk::accessible::State::Busy(true)]);
+    send(
+        tx,
+        Action::Browse {
+            view: request.0,
+            page: request.1,
+            epoch: request.2,
+        },
+    );
+}
+
+fn open_expanded(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>) {
+    if let Some(win) = ui.expanded.borrow().as_ref() {
+        win.present();
+        return;
+    }
+    let Some(current) = state.borrow().last_playback.clone() else {
+        return;
+    };
+    let win = gtk::ApplicationWindow::builder()
+        .application(&ui.window.application().unwrap())
+        .title("Now playing")
+        .transient_for(&ui.window)
+        .modal(true)
+        .default_width(1160)
+        .default_height(800)
+        .build();
+    win.add_css_class("tidal-window");
+    let body = vbox(20);
+    body.set_margin_start(28);
+    body.set_margin_end(28);
+    body.set_margin_top(24);
+    body.set_margin_bottom(20);
+    let top = hbox(16);
+    let title = label(&current.title, "page-title");
+    title.set_hexpand(true);
+    title.set_ellipsize(pango::EllipsizeMode::End);
+    top.append(&title);
+    let close = gtk::Button::with_label("Close expanded player");
+    top.append(&close);
+    body.append(&top);
+    let upper = hbox(24);
+    let art_box = vbox(0);
+    let (art, _) = cover(current.cover.as_deref(), 260, state);
+    art_box.append(&art);
+    upper.append(&art_box);
+    let details = vbox(12);
+    details.set_hexpand(true);
+    let artist = label(
+        &format!("{}\n{}", current.artist, current.album_title),
+        "muted",
+    );
+    details.append(&artist);
+    let rows = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.set_min_content_height(180);
+    scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroller.set_vexpand(true);
+    scroller.set_child(Some(&rows));
+    details.append(&scroller);
+    let controls = hbox(10);
+    for (text, kind) in [("Previous", 0), ("Play / pause", 1), ("Next", 2)] {
+        let button = gtk::Button::with_label(text);
+        let tx = tx.clone();
+        button.connect_clicked(move |_| {
+            send(
+                &tx,
+                match kind {
+                    0 => Action::Previous,
+                    1 => Action::Toggle,
+                    _ => Action::Next,
+                },
+            )
+        });
+        controls.append(&button);
+    }
+    details.append(&controls);
+    upper.append(&details);
+    body.append(&upper);
+    let area = gtk::DrawingArea::new();
+    area.add_css_class("visualizer");
+    area.set_content_height(260);
+    area.set_vexpand(true);
+    visualizer::attach(&area, state.clone());
+    body.append(&area);
+    let status = label("SPECTRUM / 24 Hz – 18 kHz / 4096 FFT / 60 FPS", "eyebrow");
+    body.append(&status);
+    win.set_child(Some(&body));
+    let queue = state.borrow().queue.clone();
+    for (index, item) in queue.iter().enumerate() {
+        let button = gtk::Button::new();
+        let text = label(&format!("{:02}  {}", index + 1, item.title), "");
+        text.set_ellipsize(pango::EllipsizeMode::End);
+        text.set_width_chars(1);
+        text.set_max_width_chars(65);
+        button.set_child(Some(&text));
+        button.set_halign(gtk::Align::Fill);
+        button.add_css_class("queue-track");
+        let tx = tx.clone();
+        button.connect_clicked(move |_| send(&tx, Action::PlayQueued(index)));
+        rows.append(&button);
+    }
+    {
+        let win = win.clone();
+        close.connect_clicked(move |_| win.close());
+    }
+    {
+        let slot = ui.expanded.clone();
+        win.connect_close_request(move |_| {
+            slot.borrow_mut().take();
+            glib::Propagation::Proceed
+        });
+    }
+    let key = gtk::EventControllerKey::new();
+    {
+        let win = win.clone();
+        key.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Escape {
+                win.close();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+    }
+    win.add_controller(key);
+    let weak = win.downgrade();
+    let state2 = state.clone();
+    let last_cover = RefCell::new(current.cover);
+    let art_box2 = art_box.clone();
+    glib::timeout_add_local(Duration::from_millis(200), move || {
+        let Some(win) = weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        if !win.is_visible() {
+            return glib::ControlFlow::Break;
+        }
+        let current = state2.borrow().last_playback.clone();
+        if let Some(current) = current {
+            title.set_text(&current.title);
+            artist.set_text(&format!("{}\n{}", current.artist, current.album_title));
+            if current.cover != *last_cover.borrow() {
+                while let Some(child) = art_box2.first_child() {
+                    art_box2.remove(&child);
+                }
+                let (art, _) = cover(current.cover.as_deref(), 260, &state2);
+                art_box2.append(&art);
+                *last_cover.borrow_mut() = current.cover;
+            }
+        } else {
+            win.close();
+            return glib::ControlFlow::Break;
+        }
+        glib::ControlFlow::Continue
+    });
+    *ui.expanded.borrow_mut() = Some(win.clone());
+    win.present();
+}
+
 pub fn run() {
     let id = std::env::var("TIDAL_APP_ID").unwrap_or_else(|_| "io.github.tidalrs.Player".into());
     let app = gtk::Application::builder().application_id(&id).build();
@@ -489,6 +692,12 @@ fn build(app: &gtk::Application) {
         epoch: 0,
         view: View::Albums,
         page: 1,
+        total: 0,
+        loading: false,
+        queue: vec![],
+        search_generation: 0,
+        suggestion_timer: None,
+        completed_query: None,
         history: vec![],
         items: vec![],
         art: HashMap::new(),
@@ -521,11 +730,6 @@ fn build(app: &gtk::Application) {
     let brand = label("TIDAL", "brand");
     brand.set_margin_start(12);
     sidebar.append(&brand);
-    let native = label("RUST  /  LINUX", "eyebrow");
-    native.set_margin_start(12);
-    native.set_margin_top(7);
-    native.set_margin_bottom(44);
-    sidebar.append(&native);
     let library_label = label("YOUR LIBRARY", "eyebrow");
     library_label.set_margin_start(14);
     library_label.set_margin_bottom(16);
@@ -711,94 +915,15 @@ fn build(app: &gtk::Application) {
     let save_album = gtk::Button::with_label("Save album");
     save_album.add_css_class("primary");
     hero.append(&save_album);
-    let mode = Rc::new(Cell::new(0usize));
     let visualizer = gtk::DrawingArea::new();
     visualizer.add_css_class("visualizer");
     visualizer.set_accessible_role(gtk::AccessibleRole::Img);
     visualizer.set_content_width(220);
     visualizer.set_content_height(150);
-    visualizer.update_property(&[gtk::accessible::Property::Label("Vines audio visualizer")]);
+    visualizer.update_property(&[gtk::accessible::Property::Label("Audio spectrum analyzer")]);
     hero.append(&visualizer);
-    let viz_controls = hbox(4);
-    let viz_mode = label(visualizer::MODES[0], "eyebrow");
-    viz_mode.set_hexpand(true);
-    let next_viz = icon_button("go-next-symbolic", "Next visualizer");
-    let expand_viz = icon_button("view-fullscreen-symbolic", "Expand visualizer");
-    viz_controls.append(&viz_mode);
-    viz_controls.append(&next_viz);
-    viz_controls.append(&expand_viz);
-    hero.append(&viz_controls);
-    {
-        let mode = mode.clone();
-        let area = visualizer.clone();
-        next_viz.connect_clicked(move |_| {
-            mode.set((mode.get() + 1) % visualizer::MODES.len());
-            let name = visualizer::MODES[mode.get()];
-            viz_mode.set_text(name);
-            area.update_property(&[gtk::accessible::Property::Label(&format!(
-                "{name} audio visualizer"
-            ))]);
-            area.queue_draw();
-        });
-    }
-    {
-        let state = state.clone();
-        let mode = mode.clone();
-        let app = app.clone();
-        expand_viz.connect_clicked(move |_| {
-            let mode = Rc::new(Cell::new(mode.get()));
-            let win = gtk::ApplicationWindow::builder()
-                .application(&app)
-                .title("TIDAL Visualizer")
-                .default_width(1100)
-                .default_height(700)
-                .build();
-            win.add_css_class("tidal-window");
-            let body = vbox(8);
-            let top = hbox(12);
-            top.set_margin_start(16);
-            top.set_margin_end(16);
-            let title = label(visualizer::MODES[mode.get()], "page-title");
-            title.set_hexpand(true);
-            top.append(&title);
-            let cycle = gtk::Button::with_label("Next visualizer");
-            top.append(&cycle);
-            let close = gtk::Button::with_label("Close visualizer");
-            top.append(&close);
-            body.append(&top);
-            let area = gtk::DrawingArea::new();
-            area.add_css_class("visualizer");
-            area.set_vexpand(true);
-            body.append(&area);
-            visualizer::attach(&area, state.clone(), mode.clone());
-            win.set_child(Some(&body));
-            {
-                let mode = mode.clone();
-                cycle.connect_clicked(move |_| {
-                    mode.set((mode.get() + 1) % visualizer::MODES.len());
-                    title.set_text(visualizer::MODES[mode.get()]);
-                });
-            }
-            {
-                let win = win.clone();
-                close.connect_clicked(move |_| win.close());
-            }
-            let keys = gtk::EventControllerKey::new();
-            {
-                let win = win.clone();
-                keys.connect_key_pressed(move |_, key, _, _| {
-                    if key == gdk::Key::Escape {
-                        win.close();
-                        return glib::Propagation::Stop;
-                    }
-                    glib::Propagation::Proceed
-                });
-            }
-            win.add_controller(keys);
-            win.present();
-            win.fullscreen();
-        });
-    }
+    let expand_viz = gtk::Button::with_label("Expand player");
+    hero.append(&expand_viz);
     let hero_scroll = gtk::ScrolledWindow::new();
     hero_scroll.set_hexpand(false);
     hero_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
@@ -811,26 +936,24 @@ fn build(app: &gtk::Application) {
         .sync_create()
         .build();
     content.add_named(&listening, Some("tracks"));
-    let pagination = hbox(12);
-    pagination.add_css_class("pagination");
+    let load_footer = hbox(12);
+    load_footer.add_css_class("loading-footer");
     let page_label = label("", "muted");
     page_label.add_css_class("small");
     page_label.set_hexpand(true);
-    pagination.append(&page_label);
-    let previous = icon_button("go-previous-symbolic", "Previous page");
-    let next = icon_button("go-next-symbolic", "Next page");
-    previous.set_sensitive(false);
-    next.set_sensitive(false);
-    pagination.append(&previous);
-    pagination.append(&next);
-    main.append(&pagination);
+    load_footer.append(&page_label);
+    main.append(&load_footer);
     let player = hbox(24);
     player.add_css_class("now-playing");
     root.append(&player);
     let now_art = hbox(0);
     let (placeholder, _) = cover(None, 48, &state);
     now_art.append(&placeholder);
-    player.append(&now_art);
+    let now_art_button = gtk::Button::new();
+    now_art_button.add_css_class("art-button");
+    now_art_button.set_child(Some(&now_art));
+    now_art_button.update_property(&[gtk::accessible::Property::Label("Open expanded player")]);
+    player.append(&now_art_button);
     let names = vbox(5);
     names.set_width_request(190);
     let now_title = label("Ready when you are", "track-title");
@@ -886,8 +1009,26 @@ fn build(app: &gtk::Application) {
     let speaker = gtk::Image::from_icon_name("audio-volume-medium-symbolic");
     player.append(&speaker);
     player.append(&volume);
+    let suggestions = gtk::Popover::new();
+    suggestions.set_autohide(false);
+    suggestions.set_has_arrow(false);
+    suggestions.add_css_class("completion-popup");
+    suggestions.set_parent(&search);
+    let suggestion_list = vbox(0);
+    suggestion_list.set_width_request(360);
+    suggestions.set_child(Some(&suggestion_list));
+    {
+        let popup = suggestions.clone();
+        search.connect_unrealize(move |_| popup.unparent());
+    }
     let ui = Ui {
         window: window.clone(),
+        expanded: Rc::new(RefCell::new(None)),
+        now_art_button,
+        grid_scroll: grid_scroll.clone(),
+        track_scroll: track_scroll.clone(),
+        suggestions,
+        suggestion_list,
         title,
         toolbar: toolbar.clone(),
         discovery_filters,
@@ -905,10 +1046,8 @@ fn build(app: &gtk::Application) {
         tracks,
         error,
         error_text,
-        previous,
-        next,
-        page: page_label,
-        pagination: pagination.clone(),
+        load_status: page_label,
+        load_footer: load_footer.clone(),
         back,
         nav,
         account,
@@ -930,7 +1069,7 @@ fn build(app: &gtk::Application) {
         album_search: search_albums.clone(),
     };
     let updating = Rc::new(Cell::new(false));
-    visualizer::attach(&ui.visualizer, state.clone(), mode);
+    visualizer::attach(&ui.visualizer, state.clone());
     {
         let ui = ui.clone();
         let state = state.clone();
@@ -966,6 +1105,65 @@ fn build(app: &gtk::Application) {
         });
     }
 
+    for button in [ui.now_art_button.clone(), expand_viz] {
+        let ui = ui.clone();
+        let state = state.clone();
+        let tx = tx.clone();
+        button.connect_clicked(move |_| open_expanded(&ui, &state, &tx));
+    }
+    for scroll in [ui.grid_scroll.clone(), ui.track_scroll.clone()] {
+        let ui = ui.clone();
+        let state = state.clone();
+        let tx = tx.clone();
+        scroll
+            .vadjustment()
+            .connect_value_changed(move |adjustment| {
+                if adjustment.upper() > adjustment.page_size() + 1.0
+                    && adjustment.value() + adjustment.page_size() >= adjustment.upper() - 350.0
+                {
+                    load_more(&ui, &state, &tx);
+                }
+            });
+    }
+    {
+        let ui = ui.clone();
+        let state = state.clone();
+        let tx = tx.clone();
+        let search_stop = ui.search.clone();
+        let popup_stop = ui.suggestions.clone();
+        ui.search.clone().connect_search_changed(move |entry| {
+            let text = entry.text().trim().to_owned();
+            let generation = {
+                let mut s = state.borrow_mut();
+                if let Some(timer) = s.suggestion_timer.take() {
+                    timer.remove();
+                }
+                s.search_generation += 1;
+                s.search_generation
+            };
+            if text.len() < 2 || state.borrow().completed_query.as_deref() == Some(&text) {
+                ui.suggestions.popdown();
+                return;
+            }
+            state.borrow_mut().completed_query = None;
+            let ui = ui.clone();
+            let state2 = state.clone();
+            let tx = tx.clone();
+            let timer = glib::timeout_add_local_once(Duration::from_millis(250), move || {
+                state2.borrow_mut().suggestion_timer = None;
+                send(
+                    &tx,
+                    Action::Suggest {
+                        query: text,
+                        generation,
+                        albums: ui.album_search.is_active(),
+                    },
+                );
+            });
+            state.borrow_mut().suggestion_timer = Some(timer);
+        });
+        search_stop.connect_stop_search(move |_| popup_stop.popdown());
+    }
     // Desktop actions use the same handlers as clicks and keyboard shortcuts.
     // They also make the application usable from Omarchy launcher hooks.
     let browse_action = gio::SimpleAction::new("browse", Some(glib::VariantTy::STRING));
@@ -1074,18 +1272,6 @@ fn build(app: &gtk::Application) {
             }
         });
     }
-    for (button, delta) in [(ui.previous.clone(), -1), (ui.next.clone(), 1)] {
-        let ui = ui.clone();
-        let state = state.clone();
-        let tx = tx.clone();
-        button.connect_clicked(move |_| {
-            let (view, page) = {
-                let s = state.borrow();
-                (s.view.clone(), (s.page as i64 + delta).max(1) as u32)
-            };
-            navigate(&ui, &state, &tx, view, page, false);
-        });
-    }
     {
         let ui = ui.clone();
         let state = state.clone();
@@ -1185,6 +1371,16 @@ fn build(app: &gtk::Application) {
         let state = state.clone();
         let tx = tx.clone();
         key.connect_key_pressed(move |_, key, _, mods| {
+            if key == gdk::Key::Escape && ui.suggestions.is_visible() {
+                ui.suggestions.popdown();
+                return glib::Propagation::Stop;
+            }
+            if key == gdk::Key::Down && ui.suggestions.is_visible() {
+                if let Some(child) = ui.suggestion_list.first_child() {
+                    child.grab_focus();
+                    return glib::Propagation::Stop;
+                }
+            }
             if mods.contains(gdk::ModifierType::CONTROL_MASK) && key == gdk::Key::k {
                 ui.search.grab_focus();
                 return glib::Propagation::Stop;
@@ -1212,15 +1408,66 @@ fn build(app: &gtk::Application) {
         let state = state.clone();
         let tx = tx.clone();
         let updating = updating.clone();
-        glib::timeout_add_local(Duration::from_millis(40), move || {
+        glib::timeout_add_local(Duration::from_millis(8), move || {
             if !ui.window.is_visible() {
                 return glib::ControlFlow::Break;
             }
             while let Ok(event) = events.try_recv() {
                 match event {
-                    Event::Level(level) => {
-                        if let Some(playback) = state.borrow_mut().last_playback.as_mut() {
-                            playback.level = level;
+                    Event::Queue(items) => {
+                        state.borrow_mut().queue = items;
+                    }
+                    Event::Suggestions {
+                        query,
+                        generation,
+                        items,
+                    } => {
+                        if generation != state.borrow().search_generation
+                            || ui.search.text().as_str() != query
+                            || !ui.search.is_sensitive()
+                        {
+                            continue;
+                        }
+                        while let Some(child) = ui.suggestion_list.first_child() {
+                            ui.suggestion_list.remove(&child);
+                        }
+                        for item in items {
+                            let button = gtk::Button::new();
+                            let row = vbox(3);
+                            let title = label(&item.title, "track-title");
+                            title.set_ellipsize(pango::EllipsizeMode::End);
+                            title.set_max_width_chars(42);
+                            row.append(&title);
+                            let artist = label(&item.subtitle, "muted");
+                            artist.set_ellipsize(pango::EllipsizeMode::End);
+                            artist.set_max_width_chars(42);
+                            row.append(&artist);
+                            button.set_child(Some(&row));
+                            button.update_property(&[gtk::accessible::Property::Label(&format!(
+                                "Complete: {}",
+                                item.title
+                            ))]);
+                            ui.suggestion_list.append(&button);
+                            let ui = ui.clone();
+                            let state = state.clone();
+                            let tx = tx.clone();
+                            button.connect_clicked(move |_| {
+                                state.borrow_mut().completed_query = Some(item.title.clone());
+                                ui.search.set_text(&item.title);
+                                let view = match item.key {
+                                    Key::Album(id) => View::Album {
+                                        id,
+                                        title: item.title.clone(),
+                                    },
+                                    _ => View::Search(item.title.clone()),
+                                };
+                                navigate(&ui, &state, &tx, view, 1, true);
+                            });
+                        }
+                        if ui.suggestion_list.first_child().is_some() {
+                            ui.suggestions.popup();
+                        } else {
+                            ui.suggestions.popdown();
                         }
                     }
                     Event::AlbumSaved(id) => {
@@ -1249,6 +1496,8 @@ fn build(app: &gtk::Application) {
                             .update_state(&[gtk::accessible::State::Busy(false)]);
                         ui.toolbar.set_visible(false);
                         ui.discovery_filters.set_visible(false);
+                        ui.suggestions.popdown();
+                        state.borrow_mut().search_generation += 1;
                         ui.search.set_text("");
                         ui.search.set_sensitive(false);
                         ui.back.set_sensitive(false);
@@ -1274,7 +1523,7 @@ fn build(app: &gtk::Application) {
                         ui.next_track.set_sensitive(false);
                         ui.seek.set_sensitive(false);
                         ui.play.set_icon_name("media-playback-start-symbolic");
-                        ui.pagination.set_visible(false);
+                        ui.load_footer.set_visible(false);
                         ui.error.set_reveal_child(false);
                         state.borrow_mut().now_cover = None;
                         while let Some(child) = ui.now_art.first_child() {
@@ -1336,6 +1585,7 @@ fn build(app: &gtk::Application) {
                         ui.error.set_reveal_child(false);
                     }
                     Event::Error(message) => {
+                        state.borrow_mut().loading = false;
                         ui.save_album.set_sensitive(true);
                         ui.title
                             .update_state(&[gtk::accessible::State::Busy(false)]);
