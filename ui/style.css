@@ -42,7 +42,7 @@
 .tidal-window .track-title { font-weight: 600; }
 .tidal-window .table-head { color: @tidal_muted; font-size: 10px; letter-spacing: 1.2px; padding: 8px 12px 13px; }
 .tidal-window .now-playing { background: @tidal_surface; border-top: 1px solid alpha(@tidal_muted,0.17); padding: 14px 24px; }
-.tidal-window .play-toggle { background: @tidal_accent; color: @tidal_bg; border-radius: 50%; min-width: 26px; min-height: 26px; padding: 7px; }
+.tidal-window .play-toggle { background: @tidal_accent; color: @tidal_bg; border-radius: 999px; min-width: 40px; min-height: 40px; padding: 0; }
 .tidal-window .play-toggle:hover { background: lighter(@tidal_accent); }
 .tidal-window scale { padding: 6px 0; }
 .tidal-window scale trough { background: @tidal_raised; min-height: 3px; border: none; }
@@ -53,3 +53,9 @@
 .tidal-window .pagination { padding: 12px 32px; border-top: 1px solid alpha(@tidal_muted,0.1); }
 .tidal-window scrollbar { background: transparent; }
 .tidal-window scrollbar slider { background: alpha(@tidal_muted,0.35); border-radius: 4px; min-width: 5px; }
+
+.tidal-window .album-hero { padding: 0 10px 20px 26px; }
+.tidal-window .album-heading { font-size: 21px; font-weight: 750; }
+.tidal-window .visualizer { color: @tidal_accent; }
+
+.tidal-window .album-search:checked { background: @tidal_selection; color: @tidal_accent; }

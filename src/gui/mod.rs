@@ -34,6 +34,12 @@ struct Ui {
     window: gtk::ApplicationWindow,
     title: gtk::Label,
     toolbar: gtk::Box,
+    hero: gtk::Box,
+    hero_art: gtk::Box,
+    hero_title: gtk::Label,
+    hero_artist: gtk::Label,
+    save_album: gtk::Button,
+    visualizer: gtk::DrawingArea,
     subtitle: gtk::Label,
     theme: gtk::Label,
     stack: gtk::Stack,
@@ -64,6 +70,7 @@ struct Ui {
     duration: gtk::Label,
     quality: gtk::Label,
     search: gtk::SearchEntry,
+    album_search: gtk::ToggleButton,
 }
 
 fn label(text: &str, class: &str) -> gtk::Label {
@@ -152,7 +159,7 @@ fn navigate(
     for (index, button) in ui.nav.iter().enumerate() {
         let active = matches!(
             (&view, index),
-            (View::Albums, 0) | (View::Favorites, 1) | (View::Playlists, 2)
+            (View::Albums, 0) | (View::Favorites, 1) | (View::Playlists, 2) | (View::Explore, 3)
         );
         if active {
             button.add_css_class("active");
@@ -169,6 +176,17 @@ fn activate(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, i
         return;
     };
     match item.key {
+        Key::Discovery(path) => navigate(
+            ui,
+            state,
+            tx,
+            View::Discovery {
+                path,
+                title: item.title,
+            },
+            1,
+            true,
+        ),
         Key::Track(index) => send(
             tx,
             Action::Play {
@@ -213,13 +231,31 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
     }
     state.borrow_mut().covers.clear();
     let grid = page.view.is_grid();
+    let album = matches!(&page.view, View::Album { .. });
+    ui.hero.set_visible(album);
+    ui.save_album.set_label("Save album");
+    ui.save_album.set_sensitive(true);
+    while let Some(child) = ui.hero_art.first_child() {
+        ui.hero_art.remove(&child);
+    }
+    if album {
+        let first = page.items.first();
+        let (art, _) = cover(first.and_then(|i| i.cover.as_deref()), 220, state);
+        ui.hero_art.append(&art);
+        ui.hero_title.set_text(&page.view.title());
+        ui.hero_artist
+            .set_text(first.map(|i| i.subtitle.as_str()).unwrap_or(""));
+    }
     for (index, item) in page.items.iter().enumerate() {
         if grid {
             let card = vbox(0);
             card.add_css_class("album-card");
             card.set_width_request(164);
             card.set_halign(gtk::Align::Start);
-            let (art, _) = cover(item.cover.as_deref(), 164, state);
+            let (art, slot) = cover(item.cover.as_deref(), 164, state);
+            if matches!(item.key, Key::Discovery(_)) {
+                slot.icon.set_icon_name(Some("find-location-symbolic"));
+            }
             card.append(&art);
             let title = label(&item.title, "card-title");
             title.set_ellipsize(pango::EllipsizeMode::End);
@@ -271,6 +307,7 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
             album.set_ellipsize(pango::EllipsizeMode::End);
             album.set_width_chars(22);
             album.set_max_width_chars(22);
+            album.set_visible(!matches!(page.view, View::Album { .. }));
             row.append(&album);
             let duration = label(&item.detail, "muted");
             duration.add_css_class("small");
@@ -303,9 +340,15 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
     let count = page.total;
     ui.title
         .update_state(&[gtk::accessible::State::Busy(false)]);
-    let pages = (count as u32).div_ceil(PAGE_SIZE).max(1);
+    let pages = if album {
+        1
+    } else {
+        (count as u32).div_ceil(PAGE_SIZE).max(1)
+    };
     let noun = match &page.view {
         View::Albums => "saved albums",
+        View::SearchAlbums(_) => "albums",
+        View::Explore | View::Discovery { .. } => "discoveries",
         View::Playlists => "playlists",
         View::Favorites => "favorite tracks",
         _ => "tracks",
@@ -321,7 +364,7 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
     } else {
         "content"
     });
-    ui.pagination.set_visible(!page.items.is_empty());
+    ui.pagination.set_visible(!page.items.is_empty() && !album);
     state.borrow_mut().items = page.items;
 }
 
@@ -352,8 +395,8 @@ fn playback(
         "media-playback-pause-symbolic"
     });
     ui.play.set_sensitive(true);
-    ui.previous_track.set_sensitive(true);
-    ui.next_track.set_sensitive(true);
+    ui.previous_track.set_sensitive(value.can_previous);
+    ui.next_track.set_sensitive(value.can_next);
     ui.seek.set_sensitive(true);
     updating.set(true);
     ui.seek.set_range(0.0, value.duration.max(1.0));
@@ -441,6 +484,7 @@ fn build(app: &gtk::Application) {
         ("media-optical-symbolic", "Albums"),
         ("emblem-favorite-symbolic", "Favorite tracks"),
         ("view-list-symbolic", "Playlists"),
+        ("find-location-symbolic", "Explore"),
     ] {
         let button = gtk::Button::new();
         button.add_css_class("side-nav");
@@ -493,8 +537,8 @@ fn build(app: &gtk::Application) {
     header.append(&heading);
     let search = gtk::SearchEntry::new();
     search.add_css_class("tidal-search");
-    search.update_property(&[gtk::accessible::Property::Label("Search TIDAL tracks")]);
-    search.set_placeholder_text(Some("Search TIDAL tracks…"));
+    search.update_property(&[gtk::accessible::Property::Label("Search TIDAL catalog")]);
+    search.set_placeholder_text(Some("Search TIDAL…"));
     search.set_width_request(240);
     search.set_valign(gtk::Align::Center);
     search.set_tooltip_text(Some("Search the TIDAL catalog · Ctrl+K"));
@@ -506,6 +550,12 @@ fn build(app: &gtk::Application) {
     play_all.add_css_class("primary");
     play_all.set_visible(false);
     toolbar.append(&play_all);
+    let search_albums = gtk::ToggleButton::with_label("Search albums");
+    search_albums.add_css_class("album-search");
+    search_albums.set_tooltip_text(Some(
+        "Find albums in the TIDAL catalog using the search field",
+    ));
+    toolbar.append(&search_albums);
     let hint = label("Browse your collection", "muted");
     hint.add_css_class("small");
     hint.set_hexpand(true);
@@ -587,7 +637,42 @@ fn build(app: &gtk::Application) {
     let track_scroll = gtk::ScrolledWindow::new();
     track_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     track_scroll.set_child(Some(&tracks));
-    content.add_named(&track_scroll, Some("tracks"));
+    let listening = hbox(0);
+    let hero = vbox(16);
+    hero.add_css_class("album-hero");
+    hero.set_width_request(220);
+    let hero_art = vbox(0);
+    hero.append(&hero_art);
+    let hero_title = label("", "album-heading");
+    hero_title.set_wrap(true);
+    hero_title.set_max_width_chars(20);
+    let hero_artist = label("", "muted");
+    hero_artist.set_wrap(true);
+    hero_artist.set_max_width_chars(24);
+    hero.append(&hero_title);
+    hero.append(&hero_artist);
+    let save_album = gtk::Button::with_label("Save album");
+    save_album.add_css_class("primary");
+    hero.append(&save_album);
+    let visualizer = gtk::DrawingArea::new();
+    visualizer.add_css_class("visualizer");
+    visualizer.set_accessible_role(gtk::AccessibleRole::Img);
+    visualizer.set_content_width(220);
+    visualizer.set_content_height(150);
+    visualizer.update_property(&[gtk::accessible::Property::Label("Vines audio visualizer")]);
+    hero.append(&visualizer);
+    hero.append(&label("VINES  /  AUDIO REACTIVE", "eyebrow"));
+    let hero_scroll = gtk::ScrolledWindow::new();
+    hero_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    hero_scroll.set_child(Some(&hero));
+    listening.append(&hero_scroll);
+    track_scroll.set_hexpand(true);
+    listening.append(&track_scroll);
+    // Hide the scroll wrapper with its hero, otherwise an empty column remains.
+    hero.bind_property("visible", &hero_scroll, "visible")
+        .sync_create()
+        .build();
+    content.add_named(&listening, Some("tracks"));
     let pagination = hbox(12);
     pagination.add_css_class("pagination");
     let page_label = label("", "muted");
@@ -625,6 +710,9 @@ fn build(app: &gtk::Application) {
     prev_track.set_sensitive(false);
     let play = icon_button("media-playback-start-symbolic", "Play / pause · Space");
     play.add_css_class("play-toggle");
+    play.set_halign(gtk::Align::Center);
+    play.set_valign(gtk::Align::Center);
+    play.set_size_request(40, 40);
     let next_track = icon_button("media-skip-forward-symbolic", "Next track");
     next_track.set_sensitive(false);
     controls.append(&prev_track);
@@ -664,6 +752,12 @@ fn build(app: &gtk::Application) {
         window: window.clone(),
         title,
         toolbar: toolbar.clone(),
+        hero,
+        hero_art,
+        hero_title,
+        hero_artist,
+        save_album,
+        visualizer,
         subtitle,
         theme: theme_label,
         stack,
@@ -694,8 +788,95 @@ fn build(app: &gtk::Application) {
         duration,
         quality,
         search,
+        album_search: search_albums.clone(),
     };
     let updating = Rc::new(Cell::new(false));
+    {
+        let state = state.clone();
+        let phase = Cell::new(0.0);
+        ui.visualizer.set_draw_func(move |area, cr, w, h| {
+            let state = state.borrow();
+            let level = state
+                .last_playback
+                .as_ref()
+                .filter(|p| !p.paused)
+                .map(|p| p.level)
+                .unwrap_or(0.0);
+            let color = area.color();
+            cr.set_source_rgba(
+                color.red() as f64,
+                color.green() as f64,
+                color.blue() as f64,
+                0.8,
+            );
+            cr.set_line_width(1.5);
+            if state.last_playback.as_ref().is_some_and(|p| !p.paused) {
+                phase.set(phase.get() + 0.033);
+            }
+            let t = phase.get();
+            for vine in 0..9 {
+                for x in 0..w {
+                    let xf = x as f64 / w as f64;
+                    let envelope = (xf * std::f64::consts::PI).sin();
+                    let y = h as f64 * 0.5
+                        + (xf * 14.0 + t * 2.0 + vine as f64 * 0.38).sin()
+                            * envelope
+                            * (8.0 + level * 55.0)
+                        + (vine as f64 - 4.0) * 5.0;
+                    if x == 0 {
+                        cr.move_to(x as f64, y);
+                    } else {
+                        cr.line_to(x as f64, y);
+                    }
+                }
+                let _ = cr.stroke();
+            }
+        });
+        let area = ui.visualizer.downgrade();
+        glib::timeout_add_local(Duration::from_millis(33), move || {
+            let Some(area) = area.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if area.is_mapped() {
+                area.queue_draw();
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+    {
+        let ui = ui.clone();
+        let state = state.clone();
+        let tx = tx.clone();
+        search_albums.connect_toggled(move |button| {
+            let text = ui.search.text().trim().to_owned();
+            if text.is_empty() {
+                ui.search.grab_focus();
+                return;
+            }
+            navigate(
+                &ui,
+                &state,
+                &tx,
+                if button.is_active() {
+                    View::SearchAlbums(text)
+                } else {
+                    View::Search(text)
+                },
+                1,
+                true,
+            );
+        });
+    }
+    {
+        let state = state.clone();
+        let tx = tx.clone();
+        ui.save_album.connect_clicked(move |button| {
+            if let View::Album { id, .. } = state.borrow().view {
+                button.set_sensitive(false);
+                send(&tx, Action::SaveAlbum { id });
+            }
+        });
+    }
 
     // Desktop actions use the same handlers as clicks and keyboard shortcuts.
     // They also make the application usable from Omarchy launcher hooks.
@@ -709,6 +890,7 @@ fn build(app: &gtk::Application) {
                 return;
             };
             let view = match value {
+                "explore" => View::Explore,
                 "albums" => View::Albums,
                 "favorites" => View::Favorites,
                 "playlists" => View::Playlists,
@@ -766,7 +948,8 @@ fn build(app: &gtk::Application) {
             let view = match index {
                 0 => View::Albums,
                 1 => View::Favorites,
-                _ => View::Playlists,
+                2 => View::Playlists,
+                _ => View::Explore,
             };
             navigate(&ui, &state, &tx, view, 1, true);
         });
@@ -822,7 +1005,18 @@ fn build(app: &gtk::Application) {
         ui.search.clone().connect_activate(move |entry| {
             let text = entry.text().trim().to_owned();
             if !text.is_empty() {
-                navigate(&ui, &state, &tx, View::Search(text), 1, true);
+                navigate(
+                    &ui,
+                    &state,
+                    &tx,
+                    if ui.album_search.is_active() {
+                        View::SearchAlbums(text)
+                    } else {
+                        View::Search(text)
+                    },
+                    1,
+                    true,
+                );
             }
         });
     }
@@ -936,6 +1130,17 @@ fn build(app: &gtk::Application) {
             }
             while let Ok(event) = events.try_recv() {
                 match event {
+                    Event::Level(level) => {
+                        if let Some(playback) = state.borrow_mut().last_playback.as_mut() {
+                            playback.level = level;
+                        }
+                    }
+                    Event::AlbumSaved(id) => {
+                        if matches!(state.borrow().view,View::Album{id:current,..} if current==id) {
+                            ui.save_album.set_label("Saved to your albums");
+                            ui.save_album.set_sensitive(false);
+                        }
+                    }
                     Event::Ready => {
                         ui.toolbar.set_visible(true);
                         ui.search.set_sensitive(true);
@@ -1013,6 +1218,11 @@ fn build(app: &gtk::Application) {
                         if page.epoch != state.borrow().epoch {
                             continue;
                         }
+                        play_all.set_label(match page.view {
+                            View::Album { .. } => "Play this album",
+                            View::Playlist { .. } => "Play this playlist",
+                            _ => "Play these tracks",
+                        });
                         play_all.set_visible(!page.view.is_grid() && !page.items.is_empty());
                         display(&ui, &state, &tx, page);
                     }
@@ -1037,6 +1247,7 @@ fn build(app: &gtk::Application) {
                         ui.error.set_reveal_child(false);
                     }
                     Event::Error(message) => {
+                        ui.save_album.set_sensitive(true);
                         ui.title
                             .update_state(&[gtk::accessible::State::Busy(false)]);
                         if ui.now_artist.text() == "Connecting to stream…" {

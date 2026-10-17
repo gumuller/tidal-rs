@@ -137,6 +137,7 @@ impl Player {
                 "--no-terminal",
                 "--volume=35",
                 "--keep-open=yes",
+                "--af=@meter:lavfi=[astats=metadata=1:reset=1]",
             ])
             .arg(format!("--input-ipc-server={}", socket.display()))
             .stdin(Stdio::null())

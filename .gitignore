@@ -2,3 +2,6 @@
 /test-results/
 /research/artifacts/
 /research/evidence/rea-bundle.json
+
+__pycache__/
+*.pyc

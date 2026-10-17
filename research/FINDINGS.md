@@ -135,3 +135,29 @@ Public references: [TIDAL authorization](https://developer.tidal.com/documentati
 [mpv JSON IPC](https://mpv.io/manual/stable/#json-ipc).
 The SDK documents a separation between API and SDK capabilities; public API
 access alone is not evidence that arbitrary native playback is supported.
+
+
+## v0.2.0 discovery and album listening
+
+The first working GTK build is preserved in local Git at `v0.1.0`. The next
+version adds account-authenticated Explore pages, genre/mood/decade navigation,
+separate album and track catalog search, and adding albums through the SDK's
+favorite-album endpoint. Explore is read from the live v1 `pages/explore` feed;
+its page links lead to actual editorial album and playlist lists. Unsupported
+video/artist modules are omitted rather than given nonfunctional controls.
+
+Album browsing loads all track pages before offering playback, preserving disc
+order and using the existing lazy per-track stream resolution. A left-hand
+artwork panel sits beside the tracks; its action says "Play this album". The
+footer play control has a fixed square allocation and fully rounded border.
+The native Cairo Vines visualization uses real `lavfi.astats.Overall.RMS_level`
+metadata from an mpv audio filter, sampled every 80 ms. It is a level-reactive
+visualization, not an FFT spectrum. Its animation freezes while paused, follows
+theme colors and only repaints while visible. No desktop loopback is captured.
+
+The native E2E suite now covers Explore-to-Jazz navigation, album search and
+opening results, idempotent saving of an album already in the user's collection,
+album playback, audio meter output, the circular button's geometry and narrow
+album layout. Full Windows feature parity is still incomplete: artist pages,
+editorial videos, offline downloads and other Windows-specific features remain
+outside this increment.

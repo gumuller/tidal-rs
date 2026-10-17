@@ -198,7 +198,7 @@ def inner():
         assert all(x>=0 and x+w<=width for x,_,w,_ in row),"Album grid overflows horizontally"
         first_labels=[n for n in walk(current[0]) if n.get_role_name()=="label"]
         assert all(rect(n)[2]<=170 for n in first_labels),"Album text extends beyond cover width"
-        for name in ["Albums","Favorite tracks","Playlists","Search TIDAL tracks","Play / pause · Space","Volume","Next page"]:
+        for name in ["Albums","Favorite tracks","Playlists","Search TIDAL catalog","Play / pause · Space","Volume","Next page"]:
             n=find(name)
             if n:
                 x,y,w,h=rect(n)
@@ -217,7 +217,7 @@ def inner():
                     if reply.get("request_id")==42:return reply.get("data")
 
     def enter_search(text):
-        entry=wait(lambda:find("Search TIDAL tracks"),"search field")
+        entry=wait(lambda:find("Search TIDAL catalog"),"search field")
         assert entry.get_editable_text_iface().set_text_contents(text),"Could not enter search"
         focus_window()
         subprocess.run(["wtype","-M","ctrl","-k","k","-m","ctrl"],check=True)
@@ -269,7 +269,35 @@ def inner():
         wait(lambda:(items:=cards()) and items[0].get_name()==first,"back to page one")
         click(first)
         wait(lambda:loaded_view(first[5:]) and track_rows(),"opened album tracks")
+        assert find("Play this album"), "Album action has the wrong label"
+        play_button=find("Play / pause · Space")
+        _,_,pw,ph=rect(play_button)
+        assert abs(pw-ph)<=1, f"Play button is not circular: {pw}x{ph}"
+        resize(900,650)
+        for row in track_rows():
+            x,y,w,h=rect(row)
+            assert x>=0 and x+w<=window()["size"][0], "Album track list overflows beside cover"
+        resize(1180,820)
+        # This album was opened from the existing saved collection. Saving it
+        # again is idempotent and does not add or remove anything from the account.
+        click("Save album")
+        wait(lambda:find("Saved to your albums"),"idempotent album save acknowledged by live API")
+        click("Play this album")
+        wait(lambda:isinstance(mpv_query("time-pos"),(int,float)) and mpv_query("time-pos")>0.2,"album playback",timeout=40)
+        meter=wait(lambda:mpv_query("af-metadata/meter"),"audio visualization metadata")
+        assert "lavfi.astats.Overall.RMS_level" in meter,"Missing real RMS audio meter"
+        assert find("Vines audio visualizer"),"Album visualizer missing"
         capture("04-album-tracks")
+        report["checks"].append("circular play button, narrow album layout, live idempotent save, album playback and real audio meter")
+        click("Play / pause · Space")
+        wait(lambda:mpv_query("pause") is True,"pause album")
+        click("Explore")
+        wait(lambda:loaded_view("Explore") and cards(),"live Explore categories")
+        capture("04b-explore")
+        click("Open Jazz")
+        wait(lambda:loaded_view("Jazz") and cards(),"Jazz discovery feed")
+        capture("04c-jazz")
+        report["checks"].append("live Explore genre navigation and discovery cards")
         report["checks"].append("album pagination and card activation open the correct album")
         click("Favorite tracks")
         rows=wait(lambda:loaded_view("Favorite tracks") and track_rows(), "favorite track rows")
@@ -309,7 +337,15 @@ def inner():
         report["checks"].append("playlist card activation and track listing")
         enter_search("Radiohead")
         wait(lambda:loaded_view("Results for “Radiohead”") and track_rows(),"catalog search results")
-        enter_search("zzzzzzTidalE2ENoSuchTrack912874zzzzzz")
+        click("Search albums")
+        wait(lambda:loaded_view("Albums for “Radiohead”") and cards(),"album catalog search")
+        capture("07b-album-search")
+        album_result=cards()[0].get_name()
+        click(album_result)
+        wait(lambda:loaded_view(album_result[5:]) and track_rows(),"search result opens playable album")
+        assert find("Save album"),"Search album cannot be saved"
+        report["checks"].append("catalog album search opens album with save action")
+        enter_search("91287409871234678901234567890123456789")
         wait(lambda:find("Nothing here yet"),"empty search state")
         capture("08-empty-search")
         report["checks"].append("keyboard-submitted catalog search and empty results")
@@ -334,7 +370,7 @@ def inner():
         capture("11-signed-out")
         report["checks"].append("sign-out clears only isolated test session and resets UI")
         assert find("Welcome back"),"Signed-out header still exposes old library information"
-        assert not find("Search TIDAL tracks").get_state_set().contains(Atspi.StateType.SENSITIVE),"Signed-out search should be disabled"
+        assert not find("Search TIDAL catalog").get_state_set().contains(Atspi.StateType.SENSITIVE),"Signed-out search should be disabled"
         logs=(out/"app.log").read_text()
         assert "Gtk-WARNING" not in logs and "Gtk-CRITICAL" not in logs and "panicked" not in logs,logs
         report["checks"].append("no GTK layout/CSS warnings, criticals or Rust panics")
