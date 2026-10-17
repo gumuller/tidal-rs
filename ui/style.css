@@ -69,3 +69,7 @@
 .completion-popup > contents { background: @tidal_bg; color: @tidal_fg; border: 1px solid @tidal_muted; border-radius: 0; box-shadow: none; font-family: "JetBrainsMono Nerd Font", monospace; }
 .completion-popup button { background: transparent; border: none; border-radius: 0; padding: 9px 12px; color: @tidal_fg; }
 .completion-popup button:hover, .completion-popup button:focus { background: @tidal_selection; }
+.tidal-window .album-heart { background: alpha(@tidal_bg,0.92); color: @tidal_fg; min-width: 28px; min-height: 28px; padding: 1px; font-size: 22px; }
+.tidal-window .album-heart:checked { color: @tidal_accent; }
+.tidal-window .home-content { padding: 0 26px 24px; }
+.tidal-window .home-heading { font-size: 15px; font-weight: 600; margin-top: 14px; padding-bottom: 8px; border-bottom: 1px solid alpha(@tidal_muted,0.25); }

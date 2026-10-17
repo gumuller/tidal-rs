@@ -215,3 +215,37 @@ Research references: mpv audio-client-name and PulseAudio output options at
 https://mpv.io/manual/stable/ ; application-specific stream monitoring at
 https://wiki.freedesktop.org/www/Software/PulseAudio/Documentation/Developer/Clients/WritingVolumeControlUIs/ ;
 FFT planning at https://docs.rs/rustfft/latest/rustfft/ .
+
+
+## v0.5.0 preferences, quality negotiation, Home and favorites
+
+Volume/quality preferences now use an atomic private state file, updated on
+control changes and window close. Both GTK and the playback worker load it.
+Quality changes reload the current track while preserving seek, pause and
+volume. Live requests for one test track returned HIGH for LOSSLESS but a
+24-bit/96 kHz unprotected FLAC DASH manifest for HI_RES_LOSSLESS. Lossless
+negotiation now retries the Hi-Res path when the standard path downgrades, and
+Max is explicitly selectable. The badge continues to use delivered quality,
+with the requested tier/decoder in its tooltip and a downgrade indicator.
+The live FLAC test also exposed FFmpeg rejecting HTTPS fragments from a local
+MPD under its default file/crypto/data protocol whitelist. The trusted player
+now explicitly allows HTTPS/TCP/TLS for these manifests. Per-track MPD paths
+keep track transitions distinct rather than reusing one manifest filename.
+Stopping the previous mpv item before replacement prevents its stale duration
+from prematurely confirming a newly loaded stream.
+
+Favorite hearts are separate overlay controls above card buttons and detail
+artwork. A cached account favorite-ID set initializes every heart, is refreshed
+periodically and updated only after successful add/remove operations. Empty
+hearts are not used to imply that an unknown state has been checked. Bottom
+artwork now navigates by the playing track's actual album ID, independently of
+the current browsing list; the expanded player has its own explicit action.
+
+Home groups recent songs/albums, favorite-artist album suggestions and TIDAL
+editorial picks. Suggestions fall back to artists ranked from favorite tracks
+and then saved-album artists when needed. Successful track starts and automatic
+queue advances record per-account local history, with track deduplication and
+a 200-item bound. History is local to this client and not backfilled from other
+devices. New radial, ribbon and waterfall modes consume real FFT bins; offline
+render checks distinguish low- and high-frequency inputs in every mode. The
+same frame-clock target is retained for all renderers.

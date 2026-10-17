@@ -1,3 +1,4 @@
+use super::storage::{History, Preferences, Quality};
 use crate::online::{self, Library, Player};
 use serde_json::json;
 use std::{
@@ -13,6 +14,7 @@ use tokio::sync::{Semaphore, mpsc as channel};
 pub const PAGE_SIZE: u32 = 48;
 #[derive(Clone, Debug)]
 pub enum View {
+    Home,
     Explore,
     Discovery {
         path: String,
@@ -36,6 +38,7 @@ pub enum View {
 impl View {
     pub fn title(&self) -> String {
         match self {
+            Self::Home => "Home".into(),
             Self::Explore => "Explore".into(),
             Self::Discovery { title, section, .. } => section
                 .as_ref()
@@ -59,7 +62,8 @@ impl View {
         }
         matches!(
             self,
-            Self::Albums
+            Self::Home
+                | Self::Albums
                 | Self::Playlists
                 | Self::Explore
                 | Self::Discovery { section: None, .. }
@@ -89,12 +93,16 @@ pub struct Page {
     pub page: u32,
     pub total: usize,
     pub sections: Vec<String>,
+    pub groups: Vec<(String, Vec<Item>)>,
     pub items: Vec<Item>,
 }
 #[derive(Clone)]
 pub struct Playback {
     pub title: String,
     pub album_title: String,
+    pub album_id: u64,
+    pub requested: String,
+    pub codec: String,
     pub artist: String,
     pub cover: Option<String>,
     pub position: f64,
@@ -120,15 +128,16 @@ pub enum Action {
         albums: bool,
     },
     PlayQueued(usize),
-    SaveAlbum {
+    FavoriteAlbum {
         id: u64,
+        saved: bool,
     },
     Toggle,
     Next,
     Previous,
     Seek(f64),
     Volume(f64),
-    Quality(bool),
+    Quality(u32),
     Login,
     Logout,
     Shutdown,
@@ -140,7 +149,8 @@ pub enum Event {
         items: Vec<Item>,
     },
     Queue(Vec<Item>),
-    AlbumSaved(u64),
+    SavedAlbums(Vec<u64>),
+    AlbumSaved(u64, bool),
     Ready,
     NeedsLogin,
     LoginCode(String, String),
@@ -182,7 +192,17 @@ async fn fetch(
 ) -> Result<(Page, Vec<Track>), Box<dyn std::error::Error>> {
     let offset = page.saturating_sub(1).saturating_mul(PAGE_SIZE);
     let mut sections = vec![];
+    let mut groups = vec![];
     let (items, total, tracks) = match view {
+        View::Home => {
+            let (sections, tracks) = home(client).await?;
+            groups = sections;
+            let items: Vec<_> = groups
+                .iter()
+                .flat_map(|(_, items)| items.iter().cloned())
+                .collect();
+            (items.clone(), items.len(), tracks)
+        }
         View::Explore | View::Discovery { .. } => {
             client.favorite_tracks(Some(0), Some(1), None, None).await?;
             let path = match view {
@@ -367,6 +387,7 @@ async fn fetch(
             page,
             total,
             sections,
+            groups,
             items,
         },
         tracks,
@@ -592,6 +613,14 @@ fn request_art(
     }
 }
 
+fn quality_name(quality: AudioQuality) -> &'static str {
+    match quality {
+        AudioQuality::Low => "LOW",
+        AudioQuality::High => "HIGH",
+        AudioQuality::Lossless => "LOSSLESS",
+        AudioQuality::HiResLossless => "HI-RES",
+    }
+}
 fn playback(library: &Library, player: &mut Player) -> Option<Playback> {
     let track = library.tracks.get(library.current?)?;
     Some(Playback {
@@ -600,13 +629,39 @@ fn playback(library: &Library, player: &mut Player) -> Option<Playback> {
             .is_some_and(|i| i + 1 < library.tracks.len()),
         can_previous: library.current.is_some_and(|i| i > 0),
         album_title: track.album.title.clone(),
+        album_id: track.album.id,
+        requested: quality_name(library.quality).into(),
+        codec: {
+            let codec = player
+                .property("audio-codec-name")
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            let rate = player
+                .property("audio-params/samplerate")
+                .ok()
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if rate > 0 {
+                format!("{codec} / {:.1} kHz", rate as f64 / 1000.0)
+            } else {
+                codec
+            }
+        },
         title: track.title.clone(),
         artist: artists(track),
         cover: track.album.cover.clone(),
         position: player.property("time-pos").ok()?.as_f64().unwrap_or(0.0),
         duration: f64::from(track.duration),
         paused: player.property("pause").ok()?.as_bool().unwrap_or(true),
-        quality: format!("{:?}", library.actual_quality.unwrap_or(library.quality)).to_uppercase(),
+        quality: {
+            let actual = library.actual_quality.unwrap_or(library.quality);
+            if actual < library.quality {
+                format!("{} ↓", quality_name(actual))
+            } else {
+                quality_name(actual).into()
+            }
+        },
     })
 }
 
@@ -648,7 +703,11 @@ pub fn spawn() -> (
             });
             let _=tx.send(if client.is_some(){Event::Ready}else{Event::NeedsLogin});
             let mut player:Option<Player>=None;
-            let mut library=Library::new();let mut listing=vec![];let mut listing_epoch=0;let mut queue_epoch=None;let mut volume=35.0;
+            let preferences=Preferences::load();let mut choice=preferences.quality;
+            let mut library=Library::new();library.quality=choice.audio();
+            let mut history=History::load(client.as_ref().and_then(|c|c.get_user_id()));
+            let mut saved_ids=None::<HashSet<u64>>;let mut saved_at=std::time::Instant::now();
+            let mut listing=vec![];let mut listing_epoch=0;let mut queue_epoch=None;let mut volume=preferences.volume;
             let http=reqwest::Client::builder().timeout(Duration::from_secs(12)).build().unwrap();
             let mut art_pending=HashSet::new();let art_limit=Arc::new(Semaphore::new(6));
             let mut tick=tokio::time::interval(Duration::from_millis(700));
@@ -658,16 +717,20 @@ pub fn spawn() -> (
                     action=rx.recv()=> {
                         let Some(action)=action else{break;};
                         if matches!(action,Action::Shutdown){break;}
+                        let mut record_started=false;
                         let outcome:Result<(),Box<dyn std::error::Error>>=async {
                             match action {
                                 Action::Login=> {
                                     let send=tx.clone();
                                     let c=online::login_with(&token_path,move |url,code|{let _=send.send(Event::LoginCode(url.into(),code.into()));}).await?;
-                                    client=Some(c);let _=tx.send(Event::Ready);
+                                    client=Some(c);saved_ids=None;history=History::load(client.as_ref().and_then(|c|c.get_user_id()));let _=tx.send(Event::Ready);
                                 },
-                                Action::Logout=>{spectrum=None;player=None;library=Library::new();client=None;if token_path.exists(){fs::remove_file(&token_path)?;}let _=tx.send(Event::NeedsLogin);},
+                                Action::Logout=>{spectrum=None;player=None;library=Library::new();library.quality=choice.audio();saved_ids=None;client=None;if token_path.exists(){fs::remove_file(&token_path)?;}let _=tx.send(Event::NeedsLogin);},
                                 Action::Browse{view,page,epoch}=>{
                                     let c=client.as_ref().ok_or("Please sign in to your account")?;
+                                    if saved_ids.is_none()||saved_at.elapsed()>Duration::from_secs(60){
+                                        let ids=favorite_ids(c).await?;let _=tx.send(Event::SavedAlbums(ids.iter().copied().collect()));saved_ids=Some(ids);saved_at=std::time::Instant::now();
+                                    }
                                     let append=page>1&&listing_epoch==epoch;
                                     let (mut page,tracks)=fetch(c,&view,page,epoch).await?;
                                     request_art(page.items.iter().filter_map(|i|i.cover.clone()).collect(),&mut art_pending,&http,&art_limit,c.get_authz(),c.get_country_code(),&tx);
@@ -689,7 +752,7 @@ pub fn spawn() -> (
                                     library.tracks=listing.clone();library.current=None;queue_epoch=Some(epoch);
                                     let _=tx.send(Event::Queue(track_items(&library.tracks)));
                                     let _=tx.send(Event::LoadingTrack(library.tracks[index].title.clone()));
-                                    library.play(client.as_ref().ok_or("Please sign in")?,player.as_mut().unwrap(),index).await?;
+                                    library.play(client.as_ref().ok_or("Please sign in")?,player.as_mut().unwrap(),index).await?;record_started=true;
                                 },
                                 Action::Suggest{query,generation,albums}=>{
                                     if let Some(c)=client.as_ref(){if let Some(auth)=c.get_authz(){
@@ -700,13 +763,24 @@ pub fn spawn() -> (
                                 Action::PlayQueued(index)=>{
                                     if index>=library.tracks.len(){return Err("Queue changed".into());}
                                     let _=tx.send(Event::LoadingTrack(library.tracks[index].title.clone()));
-                                    library.play(client.as_ref().ok_or("Please sign in")?,player.as_mut().ok_or("Player unavailable")?,index).await?;
+                                    library.play(client.as_ref().ok_or("Please sign in")?,player.as_mut().ok_or("Player unavailable")?,index).await?;record_started=true;
                                 },
-                                Action::SaveAlbum{id}=>{
-                                    client.as_ref().ok_or("Please sign in")?.add_favorite_album(id).await?;
-                                    let _=tx.send(Event::AlbumSaved(id));
+                                Action::FavoriteAlbum{id,saved}=>{
+                                    let c=client.as_ref().ok_or("Please sign in")?;
+                                    if saved{c.add_favorite_album(id).await?;}else{c.remove_favorite_album(id).await?;}
+                                    if let Some(ids)=saved_ids.as_mut(){if saved{ids.insert(id);}else{ids.remove(&id);}}
+                                    let _=tx.send(Event::AlbumSaved(id,saved));
                                 },
-                                Action::Quality(lossless)=>{library.quality=if lossless{AudioQuality::Lossless}else{AudioQuality::High};},
+                                Action::Quality(index)=>{
+                                    choice=Quality::from_index(index);library.quality=choice.audio();
+                                    if let (Some(index),Some(p),Some(c))=(library.current,player.as_mut(),client.as_ref()){
+                                        let position=p.property("time-pos").ok().and_then(|v|v.as_f64()).unwrap_or(0.0);
+                                        let paused=p.property("pause").ok().and_then(|v|v.as_bool()).unwrap_or(false);
+                                        library.play(c,p,index).await?;
+                                        p.command(json!(["seek",position,"absolute+exact"]))?;
+                                        p.command(json!(["set_property","pause",paused]))?;
+                                    }
+                                },
                                 Action::Toggle=>{if let Some(p)=player.as_mut(){p.command(json!(["cycle","pause"]))?;}},
                                 Action::Seek(position)=>{if let Some(p)=player.as_mut(){p.command(json!(["seek",position.max(0.0),"absolute+exact"]))?;}},
                                 Action::Volume(value)=>{volume=value.clamp(0.0,100.0);if let Some(p)=player.as_mut(){p.command(json!(["set_property","volume",volume]))?;}},
@@ -716,20 +790,21 @@ pub fn spawn() -> (
                                     if index>=library.tracks.len(){return Err("End of the current track page".into());}
                                     library.current=None;
                                     let _=tx.send(Event::LoadingTrack(library.tracks[index].title.clone()));
-                                    library.play(client.as_ref().ok_or("Please sign in")?,player.as_mut().ok_or("Player unavailable")?,index).await?;
+                                    library.play(client.as_ref().ok_or("Please sign in")?,player.as_mut().ok_or("Player unavailable")?,index).await?;record_started=true;
                                 },
                                 Action::Shutdown=>{},
                             }
                             Ok(())
                         }.await;
                         if let Err(e)=outcome {let _=tx.send(Event::Error(e.to_string()));}
+                        else if record_started {if let Some(track)=library.current.and_then(|i|library.tracks.get(i)){if let Err(e)=history.record(track){let _=tx.send(Event::Error(format!("Could not save listening history: {e}")));}}}
                     },
                     _=tick.tick()=>{
                         if let Some(p)=player.as_mut(){
                             if let Some(index)=library.current {
                                 if p.property("eof-reached").ok().and_then(|v|v.as_bool())==Some(true)&&index+1<library.tracks.len(){
                                     library.current=None;let _=tx.send(Event::LoadingTrack(library.tracks[index+1].title.clone()));
-                                    if let Some(c)=client.as_ref(){if let Err(e)=library.play(c,p,index+1).await{let _=tx.send(Event::Error(e.to_string()));}}
+                                    if let Some(c)=client.as_ref(){match library.play(c,p,index+1).await{Err(e)=>{let _=tx.send(Event::Error(e.to_string()));},Ok(())=>{let _=history.record(&library.tracks[index+1]);}}}
                                 }
                             }
                             if let Some(state)=playback(&library,p){
@@ -824,4 +899,128 @@ fn discovery_items(value: &serde_json::Value) -> Vec<Item> {
         }
     }
     result
+}
+
+async fn favorite_ids(client: &TidalClient) -> Result<HashSet<u64>, Box<dyn std::error::Error>> {
+    let mut result = HashSet::new();
+    let mut offset = 0;
+    loop {
+        let list = client
+            .favorite_albums(Some(offset), Some(1000), None, None)
+            .await?;
+        let count = list.items.len();
+        result.extend(list.items.into_iter().map(|a| a.item.id));
+        offset += count as u32;
+        if offset as usize >= list.total {
+            break;
+        }
+        if count == 0 {
+            return Err("Saved album list was incomplete".into());
+        }
+    }
+    Ok(result)
+}
+fn album_item(a: tidalrs::Album, detail: String) -> Item {
+    Item {
+        key: Key::Album(a.id),
+        title: a.title,
+        subtitle: a
+            .artists
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        cover: a.cover,
+        detail,
+        album: String::new(),
+    }
+}
+async fn home(
+    client: &TidalClient,
+) -> Result<(Vec<(String, Vec<Item>)>, Vec<Track>), Box<dyn std::error::Error>> {
+    let history = History::load(client.get_user_id());
+    let tracks: Vec<_> = history
+        .entries
+        .iter()
+        .take(12)
+        .map(|e| e.track.clone())
+        .collect();
+    let mut groups = vec![("Recently played songs".into(), track_items(&tracks))];
+    let mut seen = HashSet::new();
+    let albums = history
+        .entries
+        .iter()
+        .filter(|e| seen.insert(e.track.album.id))
+        .take(12)
+        .map(|e| Item {
+            key: Key::Album(e.track.album.id),
+            title: e.track.album.title.clone(),
+            subtitle: artists(&e.track),
+            cover: e.track.album.cover.clone(),
+            detail: "Recently played".into(),
+            album: String::new(),
+        })
+        .collect();
+    groups.push(("Recently played albums".into(), albums));
+    let favorites = client
+        .favorite_artists(Some(0), Some(6), None, None)
+        .await?;
+    let mut artists: Vec<(u64, String)> = favorites
+        .items
+        .into_iter()
+        .map(|a| (a.item.id, a.item.name))
+        .collect();
+    if artists.is_empty() {
+        let favorites = client
+            .favorite_tracks(Some(0), Some(100), None, None)
+            .await?;
+        let mut counts = std::collections::HashMap::<u64, (String, usize)>::new();
+        for favorite in favorites.items {
+            for a in favorite.item.artists {
+                let entry = counts.entry(a.id).or_insert((a.name, 0));
+                entry.1 += 1;
+            }
+        }
+        let mut ranked: Vec<_> = counts.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.1.cmp(&a.1.1).then(a.0.cmp(&b.0)));
+        artists = ranked
+            .into_iter()
+            .take(6)
+            .map(|(id, (name, _))| (id, name))
+            .collect();
+    }
+    if artists.is_empty() {
+        let albums = client
+            .favorite_albums(Some(0), Some(12), None, None)
+            .await?;
+        let mut ids = HashSet::new();
+        for album in albums.items {
+            for a in album.item.artists {
+                if ids.insert(a.id) {
+                    artists.push((a.id, a.name));
+                }
+            }
+        }
+        artists.truncate(6);
+    }
+    for (id, name) in artists {
+        if let Ok(list) = client.artist_albums(id, None, Some(0), Some(6)).await {
+            let mut albums = list.items;
+            albums.sort_by(|a, b| b.release_date.cmp(&a.release_date));
+            groups.push((
+                format!("From your favorites · {name}"),
+                albums
+                    .into_iter()
+                    .take(4)
+                    .map(|a| album_item(a, format!("From {name}")))
+                    .collect(),
+            ));
+        }
+    }
+    if let Ok(value) = discovery_page(client, "pages/home", 0).await {
+        let mut items = discovery_items(&value);
+        items.truncate(12);
+        groups.push(("From TIDAL".into(), items));
+    }
+    Ok((groups, tracks))
 }

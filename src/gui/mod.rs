@@ -1,13 +1,14 @@
 mod artwork;
 mod backend;
 mod spectrum;
+mod storage;
 mod visualizer;
 use crate::theme::Theme;
 use backend::{Action, Event, Item, Key, Page, View};
 use gtk::{gdk, gio, glib, pango, prelude::*};
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     rc::Rc,
     time::Duration,
@@ -26,6 +27,10 @@ struct State {
     total: usize,
     loading: bool,
     queue: Vec<Item>,
+    saved_ids: HashSet<u64>,
+    saved_loaded: bool,
+    hearts: HashMap<u64, Vec<glib::WeakRef<gtk::ToggleButton>>>,
+    visual_mode: Rc<Cell<u32>>,
     search_generation: u64,
     suggestion_timer: Option<glib::SourceId>,
     completed_query: Option<String>,
@@ -53,8 +58,9 @@ struct Ui {
     hero_art: gtk::Box,
     hero_title: gtk::Label,
     hero_artist: gtk::Label,
-    save_album: gtk::Button,
+    home_box: gtk::Box,
     visualizer: gtk::DrawingArea,
+    visual_select: gtk::DropDown,
     subtitle: gtk::Label,
     theme: gtk::Label,
     stack: gtk::Stack,
@@ -179,7 +185,11 @@ fn navigate(
     for (index, button) in ui.nav.iter().enumerate() {
         let active = matches!(
             (&view, index),
-            (View::Albums, 0) | (View::Favorites, 1) | (View::Playlists, 2) | (View::Explore, 3)
+            (View::Albums, 0)
+                | (View::Favorites, 1)
+                | (View::Playlists, 2)
+                | (View::Explore, 3)
+                | (View::Home, 4)
         );
         if active {
             button.add_css_class("active");
@@ -240,6 +250,122 @@ fn activate(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, i
     }
 }
 
+fn album_card(
+    ui: &Ui,
+    state: &Rc<RefCell<State>>,
+    tx: &UnboundedSender<Action>,
+    item: &Item,
+    index: usize,
+) -> gtk::Overlay {
+    let card = vbox(0);
+    card.add_css_class("album-card");
+    card.set_width_request(164);
+    card.set_halign(gtk::Align::Start);
+    let (art, slot) = cover(item.cover.as_deref(), 164, state);
+    if matches!(item.key, Key::Discovery(_)) {
+        slot.icon.set_icon_name(Some("find-location-symbolic"));
+    }
+    card.append(&art);
+    let title = label(&item.title, "card-title");
+    title.set_ellipsize(pango::EllipsizeMode::End);
+    title.set_width_chars(1);
+    title.set_max_width_chars(18);
+    title.set_tooltip_text(Some(&item.title));
+    let artist = label(&item.subtitle, "card-artist");
+    artist.set_ellipsize(pango::EllipsizeMode::End);
+    artist.set_width_chars(1);
+    artist.set_max_width_chars(18);
+    card.append(&title);
+    card.append(&artist);
+    if !item.detail.is_empty() {
+        let category = label(&item.detail, "eyebrow");
+        category.set_margin_top(7);
+        category.set_ellipsize(pango::EllipsizeMode::End);
+        category.set_width_chars(1);
+        category.set_max_width_chars(18);
+        card.append(&category);
+    }
+    let button = gtk::Button::new();
+    button.add_css_class("album-card-button");
+    button.set_halign(gtk::Align::Start);
+    button.set_child(Some(&card));
+    button.update_property(&[gtk::accessible::Property::Label(&format!(
+        "Open {}",
+        item.title
+    ))]);
+    {
+        let ui = ui.clone();
+        let state = state.clone();
+        let tx = tx.clone();
+        button.connect_clicked(move |_| activate(&ui, &state, &tx, index));
+    }
+    let root = gtk::Overlay::new();
+    root.set_child(Some(&button));
+    if let Key::Album(id) = item.key {
+        root.add_overlay(&album_heart(id, state, tx));
+    }
+    root
+}
+fn set_heart(button: &gtk::ToggleButton, active: bool, loaded: bool) {
+    button.set_active(active);
+    let glyph = gtk::Label::new(Some(if active { "♥︎" } else { "♡" }));
+    glyph.set_accessible_role(gtk::AccessibleRole::Presentation);
+    button.set_child(Some(&glyph));
+    button.set_sensitive(loaded);
+    let text = if active {
+        "Remove album from favorites"
+    } else {
+        "Save album to favorites"
+    };
+    button.set_tooltip_text(Some(text));
+    button.update_property(&[gtk::accessible::Property::Label(text)]);
+}
+fn update_hearts(state: &Rc<RefCell<State>>) {
+    let mut s = state.borrow_mut();
+    let saved = s.saved_ids.clone();
+    let loaded = s.saved_loaded;
+    for (id, buttons) in &mut s.hearts {
+        buttons.retain(|weak| {
+            if let Some(button) = weak.upgrade() {
+                set_heart(&button, saved.contains(id), loaded);
+                true
+            } else {
+                false
+            }
+        });
+    }
+}
+fn album_heart(
+    id: u64,
+    state: &Rc<RefCell<State>>,
+    tx: &UnboundedSender<Action>,
+) -> gtk::ToggleButton {
+    let button = gtk::ToggleButton::new();
+    button.add_css_class("album-heart");
+    button.set_halign(gtk::Align::End);
+    button.set_valign(gtk::Align::Start);
+    button.set_margin_top(6);
+    button.set_margin_end(6);
+    state
+        .borrow_mut()
+        .hearts
+        .entry(id)
+        .or_default()
+        .push(button.downgrade());
+    {
+        let s = state.borrow();
+        set_heart(&button, s.saved_ids.contains(&id), s.saved_loaded);
+    }
+    let state = state.clone();
+    let tx = tx.clone();
+    button.connect_clicked(move |button| {
+        let saved = state.borrow().saved_ids.contains(&id);
+        button.set_active(saved);
+        button.set_sensitive(false);
+        send(&tx, Action::FavoriteAlbum { id, saved: !saved });
+    });
+    button
+}
 fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, page: Page) {
     if page.epoch != state.borrow().epoch {
         return;
@@ -291,68 +417,67 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
             }
         }
     }
+    let home = matches!(page.view, View::Home);
+    if !append {
+        while let Some(child) = ui.home_box.first_child() {
+            ui.home_box.remove(&child);
+        }
+    }
+    if home {
+        let mut index = 0;
+        for (title, items) in &page.groups {
+            let heading = label(title, "home-heading");
+            heading.set_ellipsize(pango::EllipsizeMode::End);
+            heading.set_width_chars(1);
+            heading.set_max_width_chars(70);
+            heading.set_accessible_role(gtk::AccessibleRole::Heading);
+            heading.update_property(&[gtk::accessible::Property::Level(2)]);
+            ui.home_box.append(&heading);
+            if items.is_empty() {
+                let empty = label(
+                    "Start listening to build your history on this device.",
+                    "muted",
+                );
+                empty.set_wrap(true);
+                empty.set_max_width_chars(55);
+                ui.home_box.append(&empty);
+            } else {
+                let flow = gtk::FlowBox::new();
+                flow.set_selection_mode(gtk::SelectionMode::None);
+                flow.set_min_children_per_line(1);
+                flow.set_max_children_per_line(8);
+                flow.set_row_spacing(16);
+                flow.set_column_spacing(12);
+                flow.set_homogeneous(true);
+                for item in items {
+                    flow.insert(&album_card(ui, state, tx, item, index), -1);
+                    index += 1;
+                }
+                ui.home_box.append(&flow);
+            }
+        }
+    }
     let grid = page.view.is_grid();
     let album = matches!(&page.view, View::Album { .. });
     ui.hero.set_visible(album);
-    ui.save_album.set_label("Save album");
-    ui.save_album.set_sensitive(true);
     while let Some(child) = ui.hero_art.first_child() {
         ui.hero_art.remove(&child);
     }
     if album {
         let first = page.items.first();
         let (art, _) = cover(first.and_then(|i| i.cover.as_deref()), 220, state);
+        if let View::Album { id, .. } = page.view {
+            art.add_overlay(&album_heart(id, state, tx));
+        }
         ui.hero_art.append(&art);
         ui.hero_title.set_text(&page.view.title());
         ui.hero_artist
             .set_text(first.map(|i| i.subtitle.as_str()).unwrap_or(""));
     }
-    for (local_index, item) in page.items.iter().enumerate() {
+    for (local_index, item) in page.items.iter().enumerate().filter(|_| !home) {
         let index = base + local_index;
         if grid {
-            let card = vbox(0);
-            card.add_css_class("album-card");
-            card.set_width_request(164);
-            card.set_halign(gtk::Align::Start);
-            let (art, slot) = cover(item.cover.as_deref(), 164, state);
-            if matches!(item.key, Key::Discovery(_)) {
-                slot.icon.set_icon_name(Some("find-location-symbolic"));
-            }
-            card.append(&art);
-            let title = label(&item.title, "card-title");
-            title.set_ellipsize(pango::EllipsizeMode::End);
-            title.set_width_chars(1);
-            title.set_max_width_chars(18);
-            title.set_tooltip_text(Some(&item.title));
-            let artist = label(&item.subtitle, "card-artist");
-            artist.set_ellipsize(pango::EllipsizeMode::End);
-            artist.set_width_chars(1);
-            artist.set_max_width_chars(18);
-            card.append(&title);
-            card.append(&artist);
-            if matches!(page.view, View::Discovery { .. }) && !item.detail.is_empty() {
-                let category = label(&item.detail, "eyebrow");
-                category.set_margin_top(7);
-                category.set_ellipsize(pango::EllipsizeMode::End);
-                category.set_width_chars(1);
-                category.set_max_width_chars(18);
-                card.append(&category);
-            }
-            let button = gtk::Button::new();
-            button.add_css_class("album-card-button");
-            button.set_halign(gtk::Align::Start);
-            button.set_child(Some(&card));
-            button.update_property(&[gtk::accessible::Property::Label(&format!(
-                "Open {}",
-                item.title
-            ))]);
-            {
-                let ui = ui.clone();
-                let state = state.clone();
-                let tx = tx.clone();
-                button.connect_clicked(move |_| activate(&ui, &state, &tx, index));
-            }
-            ui.grid.insert(&button, -1);
+            ui.grid.insert(&album_card(ui, state, tx, item, index), -1);
         } else {
             let row = hbox(14);
             let number = label(&format!("{:02}", index + 1), "muted");
@@ -411,6 +536,7 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
     ui.title
         .update_state(&[gtk::accessible::State::Busy(false)]);
     let noun = match &page.view {
+        View::Home => "recommendations and recent plays",
         View::Albums => "saved albums",
         View::SearchAlbums(_) => "albums",
         View::Discovery {
@@ -429,15 +555,20 @@ fn display(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>, pa
     ui.subtitle.set_text(&format!("{count} {noun}"));
     ui.load_status
         .set_text(&format!("{} / {count} loaded", base + page.items.len()));
-    ui.content
-        .set_visible_child_name(if grid { "grid" } else { "tracks" });
+    ui.content.set_visible_child_name(if home {
+        "home"
+    } else if grid {
+        "grid"
+    } else {
+        "tracks"
+    });
     ui.stack
         .set_visible_child_name(if page.items.is_empty() && base == 0 {
             "empty"
         } else {
             "content"
         });
-    ui.load_footer.set_visible(!album && count > 0);
+    ui.load_footer.set_visible(!album && !home && count > 0);
     let mut s = state.borrow_mut();
     s.page = page.page;
     s.total = count;
@@ -491,13 +622,20 @@ fn playback(
     ui.elapsed.set_text(&time(value.position));
     ui.duration.set_text(&time(value.duration));
     ui.quality.set_text(&value.quality);
+    ui.quality.set_tooltip_text(Some(&format!(
+        "Delivered: {} · codec: {} · requested: {}",
+        value.quality, value.codec, value.requested
+    )));
     state.borrow_mut().last_playback = Some(value);
 }
 
 fn load_more(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Action>) {
     let request = {
         let mut s = state.borrow_mut();
-        if s.loading || s.items.len() >= s.total || matches!(s.view, View::Album { .. }) {
+        if s.loading
+            || s.items.len() >= s.total
+            || matches!(s.view, View::Album { .. } | View::Home)
+        {
             return;
         }
         s.loading = true;
@@ -588,6 +726,18 @@ fn open_expanded(ui: &Ui, state: &Rc<RefCell<State>>, tx: &UnboundedSender<Actio
     area.set_content_height(260);
     area.set_vexpand(true);
     visualizer::attach(&area, state.clone());
+    let mode = gtk::DropDown::from_strings(&visualizer::MODES);
+    mode.set_selected(state.borrow().visual_mode.get());
+    mode.bind_property("selected", &ui.visual_select, "selected")
+        .bidirectional()
+        .sync_create()
+        .build();
+    mode.update_property(&[gtk::accessible::Property::Label("Expanded visualization")]);
+    {
+        let shared = state.borrow().visual_mode.clone();
+        mode.connect_selected_notify(move |d| shared.set(d.selected()));
+    }
+    body.append(&mode);
     body.append(&area);
     let status = label("SPECTRUM / 24 Hz – 18 kHz / 4096 FFT / 60 FPS", "eyebrow");
     body.append(&status);
@@ -680,6 +830,8 @@ fn build(app: &gtk::Application) {
     let (tx, events, shutdown) = backend::spawn();
     let shutdown = RefCell::new(Some(shutdown));
     app.connect_shutdown(move |_| drop(shutdown.borrow_mut().take()));
+    let preferences = Rc::new(RefCell::new(storage::Preferences::load()));
+    let visual_mode = Rc::new(Cell::new(preferences.borrow().visualization.min(3)));
     let theme = Theme::load();
     let provider = gtk::CssProvider::new();
     provider.load_from_string(&theme.css());
@@ -690,11 +842,15 @@ fn build(app: &gtk::Application) {
     );
     let state = Rc::new(RefCell::new(State {
         epoch: 0,
-        view: View::Albums,
+        view: View::Home,
         page: 1,
         total: 0,
         loading: false,
         queue: vec![],
+        saved_ids: HashSet::new(),
+        saved_loaded: false,
+        hearts: HashMap::new(),
+        visual_mode: visual_mode.clone(),
         search_generation: 0,
         suggestion_timer: None,
         completed_query: None,
@@ -740,6 +896,7 @@ fn build(app: &gtk::Application) {
         ("emblem-favorite-symbolic", "Favorite tracks"),
         ("view-list-symbolic", "Playlists"),
         ("find-location-symbolic", "Explore"),
+        ("go-home-symbolic", "Home"),
     ] {
         let button = gtk::Button::new();
         button.add_css_class("side-nav");
@@ -747,7 +904,11 @@ fn build(app: &gtk::Application) {
         row.append(&gtk::Image::from_icon_name(icon));
         row.append(&label(text, ""));
         button.set_child(Some(&row));
-        sidebar.append(&button);
+        if text == "Home" {
+            sidebar.insert_child_after(&button, Some(&library_label));
+        } else {
+            sidebar.append(&button);
+        }
         nav.push(button);
     }
     let stretch = vbox(0);
@@ -782,7 +943,7 @@ fn build(app: &gtk::Application) {
     header.append(&back);
     let heading = vbox(0);
     heading.set_hexpand(true);
-    let title = label("Your albums", "page-title");
+    let title = label("Home", "page-title");
     title.set_accessible_role(gtk::AccessibleRole::Heading);
     title.update_property(&[gtk::accessible::Property::Level(1)]);
     title.set_ellipsize(pango::EllipsizeMode::End);
@@ -815,7 +976,9 @@ fn build(app: &gtk::Application) {
     hint.add_css_class("small");
     hint.set_hexpand(true);
     toolbar.append(&hint);
-    let quality_select = gtk::DropDown::from_strings(&["High quality", "Lossless"]);
+    let quality_select = gtk::DropDown::from_strings(&["High quality", "Lossless", "Max / Hi-Res"]);
+    quality_select.set_selected(preferences.borrow().quality.index());
+    quality_select.update_property(&[gtk::accessible::Property::Label("Streaming quality")]);
     quality_select.set_tooltip_text(Some(
         "Requested streaming quality; availability depends on your session",
     ));
@@ -877,6 +1040,12 @@ fn build(app: &gtk::Application) {
     stack.add_named(&empty, Some("empty"));
     let content = gtk::Stack::new();
     stack.add_named(&content, Some("content"));
+    let home_box = vbox(14);
+    home_box.add_css_class("home-content");
+    let home_scroll = gtk::ScrolledWindow::new();
+    home_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    home_scroll.set_child(Some(&home_box));
+    content.add_named(&home_scroll, Some("home"));
     let grid = gtk::FlowBox::new();
     grid.set_selection_mode(gtk::SelectionMode::None);
     grid.set_min_children_per_line(1);
@@ -912,9 +1081,6 @@ fn build(app: &gtk::Application) {
     hero_artist.set_max_width_chars(24);
     hero.append(&hero_title);
     hero.append(&hero_artist);
-    let save_album = gtk::Button::with_label("Save album");
-    save_album.add_css_class("primary");
-    hero.append(&save_album);
     let visualizer = gtk::DrawingArea::new();
     visualizer.add_css_class("visualizer");
     visualizer.set_accessible_role(gtk::AccessibleRole::Img);
@@ -922,6 +1088,10 @@ fn build(app: &gtk::Application) {
     visualizer.set_content_height(150);
     visualizer.update_property(&[gtk::accessible::Property::Label("Audio spectrum analyzer")]);
     hero.append(&visualizer);
+    let viz_mode = gtk::DropDown::from_strings(&visualizer::MODES);
+    viz_mode.set_selected(visual_mode.get());
+    viz_mode.update_property(&[gtk::accessible::Property::Label("Visualization")]);
+    hero.append(&viz_mode);
     let expand_viz = gtk::Button::with_label("Expand player");
     hero.append(&expand_viz);
     let hero_scroll = gtk::ScrolledWindow::new();
@@ -952,7 +1122,7 @@ fn build(app: &gtk::Application) {
     let now_art_button = gtk::Button::new();
     now_art_button.add_css_class("art-button");
     now_art_button.set_child(Some(&now_art));
-    now_art_button.update_property(&[gtk::accessible::Property::Label("Open expanded player")]);
+    now_art_button.update_property(&[gtk::accessible::Property::Label("Open playing album")]);
     player.append(&now_art_button);
     let names = vbox(5);
     names.set_width_request(190);
@@ -997,13 +1167,20 @@ fn build(app: &gtk::Application) {
     timestamps.append(&duration);
     progress.append(&timestamps);
     player.append(&progress);
-    let quality = label("HIGH", "theme-chip");
+    let quality = label(
+        match preferences.borrow().quality {
+            storage::Quality::High => "HIGH",
+            storage::Quality::Lossless => "LOSSLESS",
+            storage::Quality::Max => "MAX",
+        },
+        "theme-chip",
+    );
     quality.set_valign(gtk::Align::Center);
     player.append(&quality);
     let volume = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
     volume.set_draw_value(false);
     volume.set_width_request(85);
-    volume.set_value(35.0);
+    volume.set_value(preferences.borrow().volume);
     volume.set_tooltip_text(Some("Volume"));
     volume.update_property(&[gtk::accessible::Property::Label("Volume")]);
     let speaker = gtk::Image::from_icon_name("audio-volume-medium-symbolic");
@@ -1036,8 +1213,9 @@ fn build(app: &gtk::Application) {
         hero_art,
         hero_title,
         hero_artist,
-        save_album,
+        home_box,
         visualizer,
+        visual_select: viz_mode.clone(),
         subtitle,
         theme: theme_label,
         stack,
@@ -1095,21 +1273,40 @@ fn build(app: &gtk::Application) {
         });
     }
     {
-        let state = state.clone();
-        let tx = tx.clone();
-        ui.save_album.connect_clicked(move |button| {
-            if let View::Album { id, .. } = state.borrow().view {
-                button.set_sensitive(false);
-                send(&tx, Action::SaveAlbum { id });
-            }
-        });
-    }
-
-    for button in [ui.now_art_button.clone(), expand_viz] {
         let ui = ui.clone();
         let state = state.clone();
         let tx = tx.clone();
-        button.connect_clicked(move |_| open_expanded(&ui, &state, &tx));
+        ui.now_art_button.clone().connect_clicked(move |_| {
+            let current = state.borrow().last_playback.clone();
+            if let Some(current) = current {
+                navigate(
+                    &ui,
+                    &state,
+                    &tx,
+                    View::Album {
+                        id: current.album_id,
+                        title: current.album_title,
+                    },
+                    1,
+                    true,
+                );
+            }
+        });
+    }
+    {
+        let ui = ui.clone();
+        let state = state.clone();
+        let tx = tx.clone();
+        expand_viz.connect_clicked(move |_| open_expanded(&ui, &state, &tx));
+    }
+    {
+        let mode = visual_mode.clone();
+        let preferences = preferences.clone();
+        viz_mode.connect_selected_notify(move |d| {
+            mode.set(d.selected());
+            preferences.borrow_mut().visualization = d.selected();
+            let _ = preferences.borrow().save();
+        });
     }
     for scroll in [ui.grid_scroll.clone(), ui.track_scroll.clone()] {
         let ui = ui.clone();
@@ -1176,6 +1373,7 @@ fn build(app: &gtk::Application) {
                 return;
             };
             let view = match value {
+                "home" => View::Home,
                 "explore" => View::Explore,
                 "albums" => View::Albums,
                 "favorites" => View::Favorites,
@@ -1235,7 +1433,8 @@ fn build(app: &gtk::Application) {
                 0 => View::Albums,
                 1 => View::Favorites,
                 2 => View::Playlists,
-                _ => View::Explore,
+                3 => View::Explore,
+                _ => View::Home,
             };
             navigate(&ui, &state, &tx, view, 1, true);
         });
@@ -1311,8 +1510,12 @@ fn build(app: &gtk::Application) {
     }
     {
         let tx = tx.clone();
-        quality_select
-            .connect_selected_notify(move |d| send(&tx, Action::Quality(d.selected() == 1)));
+        let preferences = preferences.clone();
+        quality_select.connect_selected_notify(move |d| {
+            preferences.borrow_mut().quality = storage::Quality::from_index(d.selected());
+            let _ = preferences.borrow().save();
+            send(&tx, Action::Quality(d.selected()));
+        });
     }
     {
         let tx = tx.clone();
@@ -1352,7 +1555,12 @@ fn build(app: &gtk::Application) {
     }
     {
         let tx = tx.clone();
-        volume.connect_value_changed(move |v| send(&tx, Action::Volume(v.value())));
+        let preferences = preferences.clone();
+        volume.connect_value_changed(move |v| {
+            preferences.borrow_mut().volume = v.value();
+            let _ = preferences.borrow().save();
+            send(&tx, Action::Volume(v.value()));
+        });
     }
     {
         let error = ui.error.clone();
@@ -1360,7 +1568,9 @@ fn build(app: &gtk::Application) {
     }
     {
         let tx = tx.clone();
+        let preferences = preferences.clone();
         window.connect_close_request(move |_| {
+            let _ = preferences.borrow().save();
             send(&tx, Action::Shutdown);
             glib::Propagation::Proceed
         });
@@ -1390,7 +1600,13 @@ fn build(app: &gtk::Application) {
                 return glib::Propagation::Stop;
             }
             let editing = gtk::prelude::GtkWindowExt::focus(&ui.window).is_some_and(|f| {
-                f.is::<gtk::Text>() || f.is::<gtk::SearchEntry>() || f.is::<gtk::Entry>()
+                f.is::<gtk::Text>()
+                    || f.is::<gtk::SearchEntry>()
+                    || f.is::<gtk::Entry>()
+                    || f.is::<gtk::Button>()
+                    || f.is::<gtk::DropDown>()
+                    || f.ancestor(gtk::DropDown::static_type()).is_some()
+                    || f.ancestor(gtk::Popover::static_type()).is_some()
             });
             if key == gdk::Key::space && !editing {
                 if state.borrow().last_playback.is_some() {
@@ -1470,10 +1686,22 @@ fn build(app: &gtk::Application) {
                             ui.suggestions.popdown();
                         }
                     }
-                    Event::AlbumSaved(id) => {
-                        if matches!(state.borrow().view,View::Album{id:current,..} if current==id) {
-                            ui.save_album.set_label("Saved to your albums");
-                            ui.save_album.set_sensitive(false);
+                    Event::SavedAlbums(ids) => {
+                        let mut s = state.borrow_mut();
+                        s.saved_ids = ids.into_iter().collect();
+                        s.saved_loaded = true;
+                        drop(s);
+                        update_hearts(&state);
+                    }
+                    Event::AlbumSaved(id, saved) => {
+                        if saved {
+                            state.borrow_mut().saved_ids.insert(id);
+                        } else {
+                            state.borrow_mut().saved_ids.remove(&id);
+                        }
+                        update_hearts(&state);
+                        if !saved && matches!(state.borrow().view, View::Albums) {
+                            navigate(&ui, &state, &tx, View::Albums, 1, false);
                         }
                     }
                     Event::Ready => {
@@ -1486,7 +1714,7 @@ fn build(app: &gtk::Application) {
                         ui.sign_out.set_sensitive(true);
                         ui.account.set_text("●  Account connected");
                         ui.login_button.set_sensitive(true);
-                        navigate(&ui, &state, &tx, View::Albums, 1, false);
+                        navigate(&ui, &state, &tx, View::Home, 1, false);
                     }
                     Event::NeedsLogin => {
                         gtk::prelude::GtkWindowExt::set_focus(&ui.window, None::<&gtk::Widget>);
@@ -1510,6 +1738,12 @@ fn build(app: &gtk::Application) {
                             s.history.clear();
                             s.items.clear();
                             s.covers.clear();
+                            s.saved_ids.clear();
+                            s.saved_loaded = false;
+                            s.hearts.clear();
+                        }
+                        while let Some(child) = ui.home_box.first_child() {
+                            ui.home_box.remove(&child);
                         }
                         while let Some(child) = ui.grid.first_child() {
                             ui.grid.remove(&child);
@@ -1586,7 +1820,7 @@ fn build(app: &gtk::Application) {
                     }
                     Event::Error(message) => {
                         state.borrow_mut().loading = false;
-                        ui.save_album.set_sensitive(true);
+                        update_hearts(&state);
                         ui.title
                             .update_state(&[gtk::accessible::State::Busy(false)]);
                         if ui.now_artist.text() == "Connecting to stream…" {

@@ -231,6 +231,23 @@ def inner():
                     reply=json.loads(line)
                     if reply.get("request_id")==42:return reply.get("data")
 
+    def choose_combo(name,index):
+        focus_window()
+        choices=["High quality","Lossless","Max / Hi-Res"] if name=="Streaming quality" else ["Spectrum","Radial spectrum","Spectral ribbons","Waterfall"]
+        node=find(name) or next((n for n in nodes() if n.get_role_name()=="combo box" and n.get_name() in choices),None)
+        assert node,"Dropdown not found: "+name
+        subprocess.run(["wtype","-M","ctrl","-k","k","-m","ctrl"],check=True)
+        for _ in range(60):
+            subprocess.run(["wtype","-k","Tab"],check=True)
+            time.sleep(0.04);pump()
+            if any(n.get_state_set().contains(Atspi.StateType.FOCUSED) for n in walk(node)):break
+        else:raise AssertionError("Could not reach dropdown with keyboard: "+name)
+        subprocess.run(["wtype","-k","Return"],check=True)
+        wait(lambda:any(n.get_role_name()=="list item" for n in nodes()),"dropdown popup")
+        subprocess.run(["wtype","-k","Home"],check=True)
+        for _ in range(index):subprocess.run(["wtype","-k","Down"],check=True)
+        subprocess.run(["wtype","-k","Return"],check=True)
+
     def enter_search(text):
         entry=wait(lambda:find("Search TIDAL catalog"),"search field")
         assert entry.get_editable_text_iface().set_text_contents(text),"Could not enter search"
@@ -254,7 +271,13 @@ def inner():
 
     try:
         application = wait(find_app, "application registered on the private accessibility bus")
-        wait(lambda: find("Your albums"), "initial album view")
+        wait(lambda:loaded_view("Home") and cards(),"personal Home page",timeout=45)
+        assert find("Recently played songs") and find("Recently played albums"),"Home history sections missing"
+        assert any(n.get_name().startswith("From your favorites · ") for n in nodes()),"Favorite artist recommendations missing"
+        capture("00-home")
+        report["checks"].append("Home shows favorite-artist recommendations and listening-history sections")
+        click("Albums")
+        wait(lambda:loaded_view("Your albums") and cards(),"album collection")
         wait(lambda: any(n.get_name().startswith("Open ") for n in nodes()), "album cards loaded")
         time.sleep(0.4)
         capture("01-albums")
@@ -297,8 +320,10 @@ def inner():
         resize(1180,820)
         # This album was opened from the existing saved collection. Saving it
         # again is idempotent and does not add or remove anything from the account.
-        click("Save album")
-        wait(lambda:find("Saved to your albums"),"idempotent album save acknowledged by live API")
+        heart=wait(lambda:find("Remove album from favorites"),"already-saved album heart acknowledged")
+        assert heart.get_state_set().contains(Atspi.StateType.CHECKED) or heart.get_state_set().contains(Atspi.StateType.PRESSED),"Saved album heart is not filled"
+        assert not find("Save album"),"Old save button remains"
+        report["checks"].append("saved album recognized before interaction and favorite heart overlays artwork")
         click("Play this album")
         wait(lambda:isinstance(mpv_query("time-pos"),(int,float)) and mpv_query("time-pos")>0.2,"album playback",timeout=40)
         spectrum=wait(lambda:find("Audio spectrum analyzer"),"real spectrum widget")
@@ -311,16 +336,32 @@ def inner():
         wait(spectrum_live,"real PCM FFT frames and 60 fps rendering",timeout=25)
         report["spectrum_metrics"]=spectrum.get_description()
         assert not find("Next visualizer"),"Old visualization modes remain"
-        click("Open expanded player")
+        for index,name in enumerate(["Radial spectrum","Spectral ribbons","Waterfall"],1):
+            choose_combo("Visualization",index)
+            wait(lambda:name in spectrum.get_description(),"FFT visualization "+name)
+            capture("04-"+name.lower().replace(" ","-"))
+        choose_combo("Visualization",0)
+        report["checks"].append("four frequency-driven visualization modes render and respond through the native selector")
+        click("Home")
+        wait(lambda:loaded_view("Home") and find("Recently played songs"),"Home recent listening history")
+        history_file=next((Path(os.environ["XDG_STATE_HOME"])/"tidal-rs").glob("history-*.json"))
+        entries=json.loads(history_file.read_text())
+        assert entries and entries[0]["track"]["album"]["title"]==first[5:],"Played album was not recorded"
+        capture("04-home-history")
+        click("Open playing album")
+        wait(lambda:loaded_view(first[5:]) and track_rows(),"bottom artwork opens the playing album page")
+        assert not any(n.get_name()=="Now playing" and n.get_role_name()=="frame" for n in nodes()),"Bottom artwork still opens expanded view"
+        report["checks"].append("Home recent songs/albums and bottom artwork opens current album page")
+        click("Expand player")
         wait(lambda:any(n.get_name()=="Now playing" and n.get_role_name()=="frame" for n in nodes()),"bottom album art opens expanded player")
         wait(lambda:len([n for n in nodes() if n.get_name()=="Audio spectrum analyzer"])>=2,"expanded player has spectrum")
         wait(lambda:window("Now playing"),"expanded player mapped above main window")
         capture("04-expanded-player","Now playing")
         click("Close expanded player")
         wait(lambda:not any(n.get_name()=="Now playing" and n.get_role_name()=="frame" for n in nodes()),"expanded player closes")
-        report["checks"].append("real FFT data, 60 fps spectrum and bottom artwork opens expanded player")
+        report["checks"].append("real FFT data, 60 fps spectrum and separate expanded player")
         capture("04-album-tracks")
-        report["checks"].append("circular play button, narrow album layout, live idempotent save, album playback and real audio spectrum")
+        report["checks"].append("circular play button, narrow album layout, acknowledged favorite heart, album playback and real audio spectrum")
         click("Play / pause · Space")
         wait(lambda:mpv_query("pause") is True,"pause album")
         click("Explore")
@@ -370,6 +411,14 @@ def inner():
         wait(lambda:abs((mpv_query("time-pos") or 0)-15)<0.5,"accessible seek reaches mpv")
         assert find("Volume").get_value_iface().set_current_value(22.0)
         wait(lambda:mpv_query("volume")==22.0,"volume slider reaches mpv")
+        preferences=Path(os.environ["XDG_STATE_HOME"])/"tidal-rs/preferences.json"
+        choose_combo("Streaming quality",1)
+        wait(lambda:preferences.exists() and json.loads(preferences.read_text())["quality"]=="lossless","quality preference saved")
+        wait(lambda:"flac" in str(mpv_query("audio-codec-name")).lower(),"lossless applies to the active track",timeout=45)
+        wait(lambda:mpv_query("pause") is True,"quality switch preserves pause state")
+        wait(lambda:abs((mpv_query("time-pos") or 0)-15)<1.0,"quality switch preserves position")
+        assert mpv_query("volume")==22.0,"Quality switch lost volume"
+        report["checks"].append("lossless preference persists and active playback changes to FLAC while preserving position/pause/volume")
         before=mpv_query("path")
         click("Next track")
         wait(lambda:mpv_query("path") not in (None,before),"next button changes streamed track",timeout=40)
@@ -401,7 +450,7 @@ def inner():
         album_result=cards()[0].get_name()
         click(album_result)
         wait(lambda:loaded_view(album_result[5:]) and track_rows(),"search result opens playable album")
-        assert find("Save album"),"Search album cannot be saved"
+        assert find("Save album to favorites") or find("Remove album from favorites"),"Search album has no favorite heart"
         report["checks"].append("catalog album search opens album with save action")
         enter_search("91287409871234678901234567890123456789")
         wait(lambda:find("Nothing here yet"),"empty search state")
@@ -420,6 +469,30 @@ def inner():
         time.sleep(2.2)
         capture("10-restored-dark-theme")
         report["checks"].append("live light/dark palette reload without restarting or changing desktop theme")
+        dispatch('hl.dsp.window.close({window='+json.dumps('address:'+window()['address'])+'})')
+        assert app.wait(timeout=5)==0,"App failed to exit while saving settings"
+        saved_preferences=json.loads(preferences.read_text())
+        assert saved_preferences["volume"]==22.0 and saved_preferences["quality"]=="lossless","Settings lost on exit"
+        app=subprocess.Popen([str(ROOT/"target/debug/tidal-rs"),"gui"],cwd=ROOT,env=app_env,stdout=log,stderr=log)
+        application=wait(find_app,"restarted app")
+        wait(lambda:loaded_view("Home") and cards(),"Home restored after restart",timeout=45)
+        assert abs(find("Volume").get_value_iface().get_current_value()-22)<0.1,"Volume UI not restored"
+        assert find("Lossless"),"Quality selector not restored"
+        assert any(n.get_name()=="Open "+entries[0]["track"]["title"] for n in nodes()),"Recently played song missing after restart"
+        click("Albums")
+        wait(lambda:loaded_view("Your albums") and cards(),"restored album library")
+        click(cards()[0].get_name())
+        wait(lambda:find("Play this album"),"album ready after restart")
+        click("Play this album")
+        wait(lambda:mpv_query("audio-codec-name") in ("aac","flac"),"first stream decoded after restart",timeout=45)
+        assert mpv_query("volume")==22.0,"Saved volume not used for new player"
+        if mpv_query("audio-codec-name")=="aac":
+            wait(lambda:find("HIGH ↓"),"lower delivered quality is acknowledged rather than labeled lossless")
+        click("Favorite tracks")
+        wait(lambda:loaded_view("Favorite tracks") and track_rows(),"known FLAC-capable favorites")
+        click(track_rows()[0].get_name())
+        wait(lambda:"flac" in str(mpv_query("audio-codec-name")).lower(),"saved quality respected for known FLAC-capable track after restart",timeout=45)
+        report["checks"].append("volume, quality and local listening history survive a real app restart and are applied to playback")
         click("Sign out of TIDAL")
         wait(lambda:find("Sign in with TIDAL"),"signed-out view")
         assert not (Path(os.environ["XDG_STATE_HOME"])/"tidal-rs/session.json").exists(),"Test session survived sign-out"

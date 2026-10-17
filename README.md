@@ -8,6 +8,8 @@ protocol workbench.
 Local Git history starts at `v0.1.0`; discovery and album listening are `v0.2.0`. Genre releases, section artwork
 and six visualization modes are `v0.3.0`. The console-style interface, infinite
 scrolling, autocomplete and FFT spectrum replace those effects in `v0.4.0`.
+`v0.5.0` adds persisted playback settings, album hearts, Home/history and
+additional visualizations driven by FFT frequencies.
 This covers the requested discovery and album workflows; full Windows feature
 parity remains ongoing.
 
@@ -29,7 +31,9 @@ Open **Explore** for TIDAL genres, moods, decades, new releases and editorial
 playlists. Select a genre, then **New Albums** or **New Tracks** (where TIDAL
 provides them) to browse current releases. These lists paginate beyond the
 initial editorial previews. Section tiles use current artwork from that
-section, cached locally. Open an album and choose **Save album** to add it to your online library.
+section, cached locally. Use the **heart on an album image** to save or remove
+it from your online library. Filled hearts acknowledge albums already saved;
+the state is read from your account rather than assumed.
 **Play this album** queues the complete album, including albums longer than a
 single library page. The listening view places the artwork beside the tracks
 and includes a **real audio spectrum analyzer**: 64 logarithmic bands from
@@ -39,10 +43,29 @@ requests. The analyzer monitors only this player's PulseAudio stream via
 `parec`; it does not monitor the desktop mix or microphone. `pactl` and `parec`
 are required; PipeWire's PulseAudio compatibility server works on Omarchy.
 
-Click the album image in the bottom bar (or **Expand player**) to open artwork,
-the playback queue, transport controls and a larger spectrum. Escape closes it.
-The previous generative effects have been removed. The UI uses JetBrains Mono
+Click the bottom album image to open **the album currently playing**, even
+while browsing something else. **Expand player** separately opens artwork,
+the queue, controls and a larger visualization. Escape closes it. Choose
+**Spectrum**, **Radial spectrum**, **Spectral ribbons** or **Waterfall**; all
+use actual FFT frequency data, with the original spectrum as the default.
+The UI uses JetBrains Mono
 (with a monospace fallback), square surfaces and flat styling.
+
+Volume and streaming quality are stored privately in
+`$XDG_STATE_HOME/tidal-rs/preferences.json` (or the default state directory).
+They are restored into both the controls and the playback worker. Changing
+quality reloads the active stream and restores position, pause and volume.
+**High**, **Lossless** and **Max / Hi-Res** are supported. If the service's
+LOSSLESS path downgrades to AAC, the client tries its Hi-Res path for FLAC.
+The player badge reports delivered quality; its tooltip includes the requested
+quality and decoded codec. A downward arrow identifies a lower delivered tier.
+
+**Home** opens at startup with albums from favorite artists (or artists in
+favorite tracks when no artists are explicitly followed), TIDAL editorial
+selections, recently played songs and recently played albums. Recent listening
+is recorded from successful playback in this client and survives restart;
+it does not backfill listening from other devices. Each account has a private
+`history-USERID.json`, bounded to 200 distinct recent tracks.
 
 Space toggles playback outside the search field, and
 `Ctrl+Q` closes the window.
@@ -81,7 +104,12 @@ sign-out, clean close, and GTK warnings/panics. It creates a temporary silent
 audio sink so PCM monitoring is tested without audible playback, then removes
 it. Account checks allow the independently running main app to refresh its
 credentials while ensuring the original login remains present and private.
-Offline FFT tests distinguish 100 Hz from 4 kHz and verify silence. Screenshots
+The suite also restarts the app to verify persisted volume, quality and history,
+checks already-saved hearts, opens the playing album from the bottom artwork,
+and verifies that changing to lossless produces a real FLAC decoder while
+preserving pause, position and volume. Offline tests cover private preference
+storage, frequency-sensitive rendering for all four modes, and FFT tone/silence
+response. Screenshots
 are retained for visual review; they are not pixel-perfect baseline tests.
 
 ## Terminal interface
@@ -119,7 +147,7 @@ quality is HIGH; `quality lossless` requests lossless for later tracks, subject
 to account/client availability. This backend supports unencrypted BTS and DASH
 streams returned for the signed-in user. It does not implement DRM decoding.
 
-Build, nine offline tests and the local mpv check pass. Browser authorization,
+Build, twelve offline tests and the local mpv check pass. Browser authorization,
 favorite tracks, playlists and saved albums were verified live with the user's
 session. An authenticated HIGH-quality track loaded, decoded and advanced in a
 silent mpv check. Use `target/debug/tidal-rs online-check` to repeat that check;

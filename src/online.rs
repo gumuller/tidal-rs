@@ -145,6 +145,7 @@ impl Player {
                 "--no-terminal",
                 "--volume=35",
                 "--keep-open=yes",
+                "--demuxer-lavf-o=protocol_whitelist=[file,https,tcp,tls,crypto,data]",
             ])
             .arg(format!("--input-ipc-server={}", socket.display()))
             .stdin(Stdio::null())
@@ -344,9 +345,26 @@ impl Library {
             .get(index)
             .ok_or("Track number out of range; use tracks first")?;
         println!("Loading {}…", track.title);
-        let info = client
+        let mut info = client
             .track_dash_playback_info(track.id, self.quality)
             .await?;
+        // Some v1 sessions return AAC for LOSSLESS but provide FLAC via the
+        // Hi-Res negotiation path. Never silently accept that downgrade.
+        if self.quality == AudioQuality::Lossless
+            && matches!(info.audio_quality, AudioQuality::Low | AudioQuality::High)
+        {
+            if let Ok(lossless) = client
+                .track_dash_playback_info(track.id, AudioQuality::HiResLossless)
+                .await
+            {
+                if matches!(
+                    lossless.audio_quality,
+                    AudioQuality::Lossless | AudioQuality::HiResLossless
+                ) {
+                    info = lossless;
+                }
+            }
+        }
         let source = if info.manifest_mime_type.split(';').next()
             == Some("application/vnd.tidal.bts")
         {
@@ -369,7 +387,7 @@ impl Library {
             if xml.contains("ContentProtection") {
                 return Err("This DASH stream requires a DRM backend".into());
             }
-            let path = player.dir.join("stream.mpd");
+            let path = player.dir.join(format!("stream-{}.mpd", track.id));
             let mut file = OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -381,10 +399,12 @@ impl Library {
         } else {
             return Err(format!("Unsupported stream manifest: {}", info.manifest_mime_type).into());
         };
+        player.command(json!(["stop"]))?;
         player.command(json!(["loadfile", source, "replace"]))?;
         player.command(json!(["set_property", "pause", false]))?;
         // Confirm loading rather than declaring success at socket delivery.
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(20);
         loop {
             if player
                 .property("duration")
@@ -397,8 +417,15 @@ impl Library {
                 self.actual_quality = Some(info.audio_quality);
                 return Ok(());
             }
-            if player.property("idle-active")?.as_bool() == Some(true) {
-                return Err("The stream did not load in mpv; check subscription, region, and network access".into());
+
+            if started.elapsed() > Duration::from_secs(1)
+                && player
+                    .property("idle-active")
+                    .ok()
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+            {
+                return Err("The audio stream could not be decoded by mpv".into());
             }
             if Instant::now() >= deadline {
                 return Err("Stream loading timed out".into());
